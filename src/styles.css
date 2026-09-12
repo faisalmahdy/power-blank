@@ -1,0 +1,137 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Oswald", "Impact", system-ui, sans-serif;
+  --font-sans: "Rajdhani", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Share Tech Mono", ui-monospace, monospace;
+
+  --color-bg: #0c0d10;
+  --color-surface: #14161c;
+  --color-elevated: #1c1f28;
+  --color-panel: #101218;
+  --color-fg: #f4f1ea;
+  --color-muted: #9a958c;
+  --color-faint: #6a665e;
+  --color-accent: #ff6a00;
+  --color-accent-2: #ff8a33;
+  --color-ct: #4aa3ff;
+  --color-tr: #ff4a4a;
+  --color-hp: #5dca4a;
+  --color-armor: #4aa3ff;
+  --color-border: #2a2d36;
+  --color-line: #3a3e4a;
+  --color-warn: #ffb020;
+
+  --radius-xs: 2px;
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+}
+
+@layer base {
+  html,
+  body {
+    height: 100%;
+    margin: 0;
+    background: var(--color-bg);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+    overflow: hidden;
+    overscroll-behavior: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
+  .pb-play,
+  .pb-play * {
+    cursor: none !important;
+  }
+
+  .pb-slam {
+    animation: pb-slam 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  .pb-banner {
+    animation: pb-banner 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  .pb-count {
+    animation: pb-count 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+  .pb-slot-in {
+    animation: pb-slot-in 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  .pb-feed-in {
+    animation: pb-feed-in 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  @keyframes pb-slot-in {
+    0% {
+      opacity: 0;
+      transform: translateX(-8px);
+    }
+    100% {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @keyframes pb-feed-in {
+    0% {
+      opacity: 0;
+      transform: translateX(12px);
+    }
+    100% {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @keyframes pb-slam {
+    0% {
+      transform: translateX(-50%) scale(1.28);
+      opacity: 0;
+    }
+    100% {
+      transform: translateX(-50%) scale(1);
+      opacity: 1;
+    }
+  }
+  @keyframes pb-banner {
+    0% {
+      transform: scaleX(0.4);
+      opacity: 0;
+    }
+    100% {
+      transform: scaleX(1);
+      opacity: 1;
+    }
+  }
+  @keyframes pb-count {
+    0% {
+      transform: scale(1.55);
+      opacity: 0.15;
+    }
+    70% {
+      transform: scale(0.96);
+      opacity: 1;
+    }
+    100% {
+      transform: scale(1);
+      opacity: 1;
+    }
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

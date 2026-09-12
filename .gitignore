@@ -1,0 +1,16 @@
+node_modules/
+.tanstack/
+.vercel/
+.grok/
+screenshots/
+artifacts/
+dist/
+.node_modules.lock
+.DS_Store
+*.local
+.env
+.env.*
+.vite/
+coverage/
+*.log
+AGENTS.md
