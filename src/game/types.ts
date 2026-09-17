@@ -191,7 +191,7 @@ export type HudSnapshot = {
   bloom: number;
   hurtDir: number;
   sites: Array<{ name: string; x: number; z: number }>;
-  bannerKind: "" | "count" | "mission" | "round" | "bomb" | "defuse" | "blood" | "multi" | "down";
+  bannerKind: "" | "count" | "mission" | "round" | "match" | "bomb" | "defuse" | "blood" | "multi" | "down";
   bannerTeam: Team | null;
   kits: KitId[];
   reloadFrac: number;

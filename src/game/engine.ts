@@ -275,6 +275,9 @@ export function createEngine(
   let lockedDefuser: string | null = null;
   let pendingWin: Team | null = null;
   let pendingWinT = 0;
+  let matchOver: Team | "draw" | null = null;
+  let matchOverT = 0;
+  let matchPoint = false;
   let kitFrac = 0;
   let cookMax = 1.7;
   const T = STR[cfg.settings.locale] ?? STR.en;
@@ -549,6 +552,7 @@ export function createEngine(
   }
 
   function announce(s: string, t = 1.6, kind: HudSnapshot["bannerKind"] = "", team: Team | null = null) {
+    if (matchOver && kind !== "match" && kind !== "round") return;
     announcer = s;
     announcerT = t;
     bannerKind = kind;
@@ -572,8 +576,10 @@ export function createEngine(
       audio.radio(s === T.tenSeconds ? "ten" : "plant");
     } else if (kind === "defuse") {
       audio.radio("defuse");
-    } else if (kind === "round") {
+    } else if (kind === "round" || kind === "match") {
       audio.radio("win");
+      audio.slam();
+      trauma = Math.max(trauma, kind === "match" ? 0.52 : 0.42);
     }
   }
 
@@ -585,10 +591,10 @@ export function createEngine(
   }
 
   function applyDamage(a: Actor, dmg: number, head: boolean, src: Actor, weapon: WeaponId) {
-    if (!a.alive || a.spawnProt > 0) return;
+    if (!a.alive || a.spawnProt > 0 || ended || matchOver) return;
     if (a.team === src.team && !(a === src && WEAPONS[weapon].tribe === "nade")) return;
     let d = dmg;
-    if (bombPlanted && a.bot && a.team === "CT" && a.plantT > 0.1) d *= 0.46;
+    if (bombPlanted && a.bot && a.team === "CT" && a.plantT > 0.1) d *= 0.32;
     const vestHit = a === player && a.armor > 8;
     if (head) d *= WEAPONS[weapon].headMul;
     if (a.armor > 0 && !head && WEAPONS[weapon].tribe !== "sr") {
@@ -1419,6 +1425,9 @@ export function createEngine(
               announce(T.planted, 2.2, "bomb", "TR");
               audio.plant();
               matchTime = Math.max(matchTime, BOMB_FUSE);
+              for (const a of actors) {
+                if (a.alive && a.team === "CT") a.spawnProt = Math.max(a.spawnProt, 1.65);
+              }
             }
           } else plantProg = 0;
         } else {
@@ -1476,7 +1485,7 @@ export function createEngine(
         const d = Math.hypot(e.x - b.x, e.z - b.z);
         const see = los(b.x, b.y + 1.5, b.z, e.x, e.y + 1.45, e.z);
         const onKit = bombPlanted && e.team === "CT" && e.plantT > 0.12;
-        if (onKit && d > 3.5) continue;
+        if (onKit && d > 2.55) continue;
         if (see && d < best) {
           best = d;
           target = e;
@@ -1541,6 +1550,9 @@ export function createEngine(
                 announce(T.planted, 2.2, "bomb", "TR");
                 audio.plant();
                 matchTime = Math.max(matchTime, BOMB_FUSE);
+                for (const a of actors) {
+                  if (a.alive && a.team === "CT") a.spawnProt = Math.max(a.spawnProt, 1.65);
+                }
               }
             } else if (!here) {
               commit = true;
@@ -1557,10 +1569,11 @@ export function createEngine(
           }
         } else if (bombPlanted && b.team === "TR") {
           const ang = (b.wp % 8) * 0.85;
-          const rad = 4.5 + (b.wp % 3) * 1.15;
+          const rad = 6.2 + (b.wp % 3) * 1.1;
           goalX = bombX + Math.cos(ang) * rad;
           goalZ = bombZ + Math.sin(ang) * rad;
-          if (Math.hypot(b.x - bombX, b.z - bombZ) > 7.5) commit = true;
+          const dHold = Math.hypot(b.x - bombX, b.z - bombZ);
+          if (dHold > 8.8 || dHold < 5.2) commit = true;
         } else if (bombPlanted && b.team === "CT") {
           const aim = towardBomb(b.x, b.z);
           const d = Math.hypot(b.x - bombX, b.z - bombZ);
@@ -1587,10 +1600,10 @@ export function createEngine(
             }
           }
         } else if (!bombPlanted && b.team === "CT" && world.sites.length) {
-          const defaulting = matchTime > ROUND_TIME - 8.5;
+          const defaulting = matchTime > ROUND_TIME - 10.5;
           if (defaulting) {
-            goalX = b.wp % 2 === 0 ? -2.4 : 2.4;
-            goalZ = 7.2;
+            goalX = b.wp % 2 === 0 ? -2.2 : 2.2;
+            goalZ = 13.2;
             if (Math.hypot(b.x - goalX, b.z - goalZ) > 1.8) commit = true;
           } else {
             const s = world.sites[b.wp % world.sites.length]!;
@@ -1664,7 +1677,8 @@ export function createEngine(
           dist < 16.5 &&
           b.seeT > 0.45 &&
           freeze <= 0 &&
-          b.fireCd <= 0
+          b.fireCd <= 0 &&
+          !(bombPlanted && target.team === "CT" && target.plantT > 0.1)
         ) {
           const origin = new THREE.Vector3(b.x, b.y + 1.5, b.z);
           const dir = new THREE.Vector3(target.x - b.x, 0.22, target.z - b.z).normalize();
@@ -1735,6 +1749,10 @@ export function createEngine(
             b.vz = 6.8;
           }
         }
+        if (bombPlanted && b.team === "CT" && Math.abs(b.z - bombZ) < 3.8 && Math.abs(bombX - b.x) > 3.2) {
+          b.vz *= 0.4;
+          b.vx = Math.sign(bombX - b.x) * 6.8;
+        }
         if (b.stuck > 0.18) {
           const r = rightOf(Math.atan2(-dxg, -dzg));
           b.vx += r.x * b.strafeDir * 7.2;
@@ -1768,9 +1786,12 @@ export function createEngine(
         if (b.stuck > 0.45) b.strafeDir *= -1;
       } else b.stuck = 0;
       if (bombPlanted && b.team === "CT" && commit && !doingObj && Math.hypot(b.x - beforeX, b.z - beforeZ) < 0.04) {
-        b.x += (0 - b.x) * 0.5;
-        b.z += Math.sign(bombZ - b.z || 1) * 1.45;
-        const unstick = moveCylinder(b.x, b.y, b.z, RADIUS, HEIGHT, 0, 0.02, Math.sign(bombZ - b.z || 1) * 0.4, world.colliders);
+        const nx = bombX - b.x;
+        const nz = bombZ - b.z;
+        const nl = Math.hypot(nx, nz) || 1;
+        b.x += (nx / nl) * 1.5;
+        b.z += (nz / nl) * 1.5;
+        const unstick = moveCylinder(b.x, b.y, b.z, RADIUS, HEIGHT, (nx / nl) * 0.5, 0.02, (nz / nl) * 0.5, world.colliders);
         b.x = unstick.x;
         b.y = unstick.y;
         b.z = unstick.z;
@@ -1808,14 +1829,16 @@ export function createEngine(
     else roundsTR++;
     const top = actors.slice().sort((a, b) => b.rkills - a.rkills || b.kills - a.kills)[0];
     roundMvp = top && top.rkills > 0 ? top.name : "";
-    announce(winner === "CT" ? T.ctWin : T.trWin, 3.2, "round", winner);
+    announce(winner === "CT" ? T.ctWin : T.trWin, 2.15, "round", winner);
     onEvent({ type: "roundEnd", winner });
     money = Math.min(MONEY_CAP, money + (winner === cfg.team ? 2400 : 1400));
     if (roundsCT >= ROUNDS_TO_WIN || roundsTR >= ROUNDS_TO_WIN) {
-      finish(roundsCT === roundsTR ? "draw" : roundsCT > roundsTR ? "CT" : "TR");
+      matchOver = roundsCT === roundsTR ? "draw" : roundsCT > roundsTR ? "CT" : "TR";
+      matchOverT = 4.5;
       return;
     }
-    roundResetting = 3.4;
+    matchPoint = roundsCT === ROUNDS_TO_WIN - 1 || roundsTR === ROUNDS_TO_WIN - 1;
+    roundResetting = 5.2;
   }
 
   function detonate() {
@@ -1931,6 +1954,18 @@ export function createEngine(
       }
       return;
     }
+    if (matchOver) {
+      matchOverT -= dt;
+      if (matchOverT <= 2.25 && bannerKind !== "match") {
+        announce(T.matchOver, 2.25, "match", matchOver === "draw" ? null : matchOver);
+      }
+      if (matchOverT <= 0) {
+        const w = matchOver;
+        matchOver = null;
+        finish(w);
+      }
+      return;
+    }
     if (roundResetting > 0) {
       roundResetting -= dt;
       if (roundResetting <= 0) resetRound();
@@ -1944,7 +1979,17 @@ export function createEngine(
         const prevN = Math.ceil(prev - FREEZE_GO);
         if (nowN !== prevN && nowN >= 1 && nowN <= 5) announce(String(nowN), 1.2, "count");
         if (prev > FREEZE_GO && freeze <= FREEZE_GO) {
-          announce(T.mission, 1.85, "mission");
+          if (matchPoint) {
+            const mpTeam =
+              roundsCT >= ROUNDS_TO_WIN - 1 && roundsTR < ROUNDS_TO_WIN - 1
+                ? "CT"
+                : roundsTR >= ROUNDS_TO_WIN - 1 && roundsCT < ROUNDS_TO_WIN - 1
+                  ? "TR"
+                  : null;
+            announce(T.matchPoint, 1.9, "mission", mpTeam);
+          } else {
+            announce(T.mission, 1.85, "mission");
+          }
           if (cfg.mode === "demolition" && !plantSite) plantSite = chooseSite();
         }
       }
@@ -2150,7 +2195,9 @@ export function createEngine(
     hud.bombPlanted = bombPlanted;
     hud.bombTime = bombTime;
     hud.siteHint = siteHint;
-    hud.allies = actors.filter((a) => a.team === player.team && a.alive).map((a) => ({ x: a.x, z: a.z, yaw: a.yaw }));
+    hud.allies = actors
+      .filter((a) => a !== player && a.bot && a.team === player.team && a.alive)
+      .map((a) => ({ x: a.x, z: a.z, yaw: a.yaw }));
     hud.enemies = actors
       .filter((a) => a.team !== player.team && a.alive)
       .map((a) => ({
@@ -2188,7 +2235,7 @@ export function createEngine(
       if (d < s.r * 0.92) smokeAmt = Math.max(smokeAmt, 0.84 * (1 - d / (s.r * 0.92)));
     }
     hud.smoke = smokeAmt;
-    hud.roundOver = roundResetting > 0;
+    hud.roundOver = roundResetting > 0 || !!matchOver;
     hud.roundMvp = roundResetting > 0 ? roundMvp : "";
     hud.nades = player.nades;
     hud.primary = player.primary;
@@ -2242,7 +2289,7 @@ export function createEngine(
 
     handleInventory();
     updatePlayer(dt);
-    if (freeze <= 0 && roundResetting <= 0 && !pendingWin) {
+    if (freeze <= 0 && roundResetting <= 0 && !pendingWin && !matchOver) {
       updateBots(dt);
       updateNades(dt);
     } else {
