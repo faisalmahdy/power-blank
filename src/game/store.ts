@@ -13,7 +13,7 @@ import type {
   Team,
   WeaponId,
 } from "./types";
-import { BOT_NAMES, LOBBY_BANTER } from "./strings";
+import { BOT_NAMES, LOBBY_BANTER, STR } from "./strings";
 
 const SAVE_KEY = "powerblank_v1";
 
@@ -121,7 +121,7 @@ function fakeRooms(channelId: string): RoomInfo[] {
       mode: modes[i % modes.length]!,
       players: Math.min(cap, players),
       cap,
-      ping: 18 + (i * 7) % 55,
+      ping: 18 + ((i * 17) % 95),
       locked: i === 5,
     };
   });
@@ -177,6 +177,10 @@ type State = {
   killfeed: KillFeedItem[];
   scoreboard: boolean;
   result: ResultState | null;
+  lastScore: { ct: number; tr: number } | null;
+  lastMvp: string | null;
+  autoLaunch: boolean;
+  launching: boolean;
   matchKey: number;
   showShop: boolean;
   showSettings: boolean;
@@ -202,6 +206,7 @@ type State = {
   pushKill: (item: Omit<KillFeedItem, "id">) => void;
   setScoreboard: (v: boolean) => void;
   finishMatch: (r: ResultState) => void;
+  rematch: () => void;
   persist: () => void;
 };
 
@@ -282,6 +287,10 @@ export const usePB = create<State>((set, get) => {
     killfeed: [],
     scoreboard: false,
     result: null,
+    lastScore: null,
+    lastMvp: null,
+    autoLaunch: false,
+    launching: false,
     matchKey: 0,
     showShop: false,
     showSettings: false,
@@ -294,11 +303,13 @@ export const usePB = create<State>((set, get) => {
       persistNow(get());
     },
     setLoadout: (p) => {
+      if (get().launching) return;
       set({ loadout: { ...get().loadout, ...p } });
       persistNow(get());
     },
     buyWeapon: (id, price) => {
       const s = get();
+      if (s.launching) return false;
       if (s.unlocked.includes(id)) return true;
       if (s.gp < price) return false;
       set({ gp: s.gp - price, unlocked: ownedIds([...s.unlocked, id], s.loadout) });
@@ -330,6 +341,8 @@ export const usePB = create<State>((set, get) => {
         team,
         ready: true,
         slots,
+        autoLaunch: false,
+        launching: false,
         chat: [
           { id: chatId++, from: "SYSTEM", text: `${s.nick.toUpperCase()} entered ${r.name}` },
         ],
@@ -357,6 +370,7 @@ export const usePB = create<State>((set, get) => {
       get().createRoom(map, "demolition", "QUICK MATCH");
     },
     swapTeam: () => {
+      if (get().launching) return;
       const team: Team = get().team === "CT" ? "TR" : "CT";
       set({
         team,
@@ -364,6 +378,7 @@ export const usePB = create<State>((set, get) => {
       });
     },
     toggleReady: () => {
+      if (get().launching) return;
       const ready = !get().ready;
       set({
         ready,
@@ -374,11 +389,12 @@ export const usePB = create<State>((set, get) => {
       const msg = text.trim().slice(0, 80);
       if (!msg) return;
       const s = get();
+      if (s.launching) return;
       set({ chat: [...s.chat.slice(-40), { id: chatId++, from: s.nick.toUpperCase(), text: msg }] });
     },
     tickLobby: () => {
       const s = get();
-      if (s.phase !== "waiting") return;
+      if (s.phase !== "waiting" || s.launching) return;
       const taken = new Set(s.slots.filter((x) => !x.empty).map((x) => x.name));
       const empties = s.slots
         .map((sl, i) => ({ sl, i }))
@@ -400,7 +416,7 @@ export const usePB = create<State>((set, get) => {
           team: pick.sl.team,
           ready: false,
           you: false,
-          ping: 16 + ((pick.i * 11) % 54),
+          ping: 16 + ((pick.i * 23) % 90),
           empty: false,
         };
         set({
@@ -451,7 +467,7 @@ export const usePB = create<State>((set, get) => {
           team: sl.team,
           ready: true,
           you: false,
-          ping: 18 + ((ni * 13) % 50),
+          ping: 18 + ((ni * 29) % 95),
           empty: false,
         };
       });
@@ -466,20 +482,29 @@ export const usePB = create<State>((set, get) => {
             : s.chat,
       });
     },
-    startMatch: () =>
+    startMatch: () => {
+      if (get().phase !== "waiting") return;
       set({
         phase: "playing",
         killfeed: [],
         result: null,
         scoreboard: false,
+        autoLaunch: false,
+        launching: false,
         matchKey: get().matchKey + 1,
-      }),
+      });
+    },
     leaveRoom: () =>
       set({
         phase: get().channel ? "rooms" : "title",
         room: null,
         slots: [],
         chat: [],
+        lastScore: null,
+        lastMvp: null,
+        result: null,
+        autoLaunch: false,
+        launching: false,
       }),
     pushChat: (from, text) =>
       set({ chat: [...get().chat.slice(-40), { id: chatId++, from, text }] }),
@@ -500,11 +525,45 @@ export const usePB = create<State>((set, get) => {
           wins: s.stats.wins + (win ? 1 : 0),
         },
         result: r,
+        lastScore: { ct: r.scoreCT, tr: r.scoreTR },
+        lastMvp: r.mvp,
         phase: "results" as Phase,
         scoreboard: false,
       };
       set(next);
       persistNow({ ...get(), ...next });
+    },
+    rematch: () => {
+      const s = get();
+      if (!s.room) {
+        set({ phase: "title", result: null });
+        return;
+      }
+      const t = STR[s.settings.locale] ?? STR.en;
+      const last = s.result
+        ? `${s.result.scoreCT}:${s.result.scoreTR}`
+        : s.lastScore
+          ? `${s.lastScore.ct}:${s.lastScore.tr}`
+          : "";
+      set({
+        phase: "waiting",
+        result: null,
+        killfeed: [],
+        scoreboard: false,
+        ready: true,
+        showShop: false,
+        showSettings: false,
+        slots: s.slots.map((sl) => (sl.empty ? sl : { ...sl, ready: true })),
+        autoLaunch: true,
+        launching: true,
+        chat: [
+          {
+            id: chatId++,
+            from: "SYSTEM",
+            text: last ? `${t.rematch} · ${t.lastMatch} ${last}` : t.rematch,
+          },
+        ],
+      });
     },
     persist: () => persistNow(get()),
   };

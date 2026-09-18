@@ -364,7 +364,7 @@ export function GameScreen({ cfg, onEvent, onQuit }: Props) {
         </div>
       )}
 
-      {(scoreboard || hud.roundOver) && (
+      {(scoreboard || (hud.roundOver && hud.bannerKind !== "round" && hud.bannerKind !== "match")) && (
         <Scoreboard
           rows={rows}
           you={cfg.nickname.toUpperCase()}
@@ -455,7 +455,30 @@ function Theater({ hud, compact }: { hud: HudSnapshot; compact?: boolean }) {
       </div>
     );
   }
-  if (hud.bannerKind === "round") return null;
+  if (hud.bannerKind === "round" || hud.bannerKind === "match") {
+    const col =
+      hud.bannerTeam === "CT"
+        ? "border-ct text-ct"
+        : hud.bannerTeam === "TR"
+          ? "border-tr text-tr"
+          : "border-accent text-accent";
+    const label = hud.bannerKind === "match" ? "MATCH" : "ROUND";
+    return (
+      <div className="pointer-events-none absolute inset-0 z-[22] flex items-center justify-center bg-bg/72">
+        <div className={`pb-slam w-[min(760px,94vw)] border-2 bg-bg/85 px-5 py-6 text-center ${col}`}>
+          <div className="font-display text-[10px] tracking-[0.48em] text-muted md:text-xs">{label}</div>
+          <div className={`font-display tracking-[0.2em] ${compact ? "text-4xl" : "text-6xl md:text-8xl"}`}>
+            {hud.announcer}
+          </div>
+          <div className="mt-4 flex items-center justify-center gap-4 font-display">
+            <span className="tabular-nums text-3xl text-ct md:text-5xl">{hud.scoreCT}</span>
+            <span className="text-muted">:</span>
+            <span className="tabular-nums text-3xl text-tr md:text-5xl">{hud.scoreTR}</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
   const bar = hud.bannerKind === "defuse" ? "bg-ct text-bg" : "bg-warn text-bg";
   return (
     <div

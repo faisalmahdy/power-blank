@@ -47,6 +47,37 @@ export function bootAudio(): AudioContext | null {
   return sharedCtx;
 }
 
+/** Waiting-room 3-2-1 / GO. Safe before createAudio(). n=0 is GO. */
+export function lobbyCount(n: number) {
+  const ctx = bootAudio();
+  if (!ctx) return;
+  const t = ctx.currentTime;
+  const osc = ctx.createOscillator();
+  const g = ctx.createGain();
+  osc.type = n <= 0 ? "sawtooth" : "square";
+  osc.frequency.value = n <= 0 ? 220 : 480 + (3 - Math.max(1, Math.min(3, n))) * 140;
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(n <= 0 ? 0.16 : 0.1, t + 0.012);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + (n <= 0 ? 0.38 : 0.16));
+  osc.connect(g);
+  g.connect(ctx.destination);
+  osc.start(t);
+  osc.stop(t + (n <= 0 ? 0.42 : 0.18));
+  if (n <= 0) {
+    const o2 = ctx.createOscillator();
+    const g2 = ctx.createGain();
+    o2.type = "square";
+    o2.frequency.value = 660;
+    g2.gain.setValueAtTime(0.0001, t);
+    g2.gain.exponentialRampToValueAtTime(0.08, t + 0.02);
+    g2.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    o2.connect(g2);
+    g2.connect(ctx.destination);
+    o2.start(t);
+    o2.stop(t + 0.24);
+  }
+}
+
 export function createAudio(): AudioHandle {
   let ctx: AudioContext | null = null;
   let bus: Bus | null = null;
