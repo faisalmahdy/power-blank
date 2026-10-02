@@ -59,6 +59,26 @@ function parseLoadout(raw: unknown): Loadout {
   };
 }
 
+function parseLastRoom(raw: unknown): RoomInfo | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Partial<RoomInfo>;
+  const maps = new Set(["depot", "harbor", "bazaar", "library", "street"]);
+  const modes = new Set(["tdm", "demolition", "elimination"]);
+  if (typeof r.id !== "string" || typeof r.name !== "string") return null;
+  if (!maps.has(r.map ?? "") || !modes.has(r.mode ?? "")) return null;
+  if (typeof r.players !== "number" || typeof r.cap !== "number" || typeof r.ping !== "number") return null;
+  return {
+    id: r.id.slice(0, 48),
+    name: r.name.slice(0, 24),
+    map: r.map as MapId,
+    mode: r.mode as Mode,
+    players: r.players,
+    cap: r.cap,
+    ping: r.ping,
+    locked: !!r.locked,
+  };
+}
+
 function loadSave(): {
   nick: string;
   gp: number;
@@ -66,6 +86,8 @@ function loadSave(): {
   settings: Settings;
   stats: { matches: number; kills: number; wins: number };
   loadout: Loadout;
+  lastChannelId: string | null;
+  lastRoom: RoomInfo | null;
 } {
   try {
     const raw = localStorage.getItem(SAVE_KEY);
@@ -81,6 +103,10 @@ function loadSave(): {
       settings: { ...DEFAULT_SETTINGS, ...(p.settings ?? {}) },
       stats: p.stats ?? { matches: 0, kills: 0, wins: 0 },
       loadout: parseLoadout(p.loadout),
+      lastChannelId: ["rookie", "veteran", "elite", "tdm", "demo"].includes(String(p.lastChannelId))
+        ? String(p.lastChannelId)
+        : null,
+      lastRoom: parseLastRoom(p.lastRoom),
     };
   } catch {
     return {
@@ -90,12 +116,14 @@ function loadSave(): {
       settings: DEFAULT_SETTINGS,
       stats: { matches: 0, kills: 0, wins: 0 },
       loadout: { ...DEFAULT_LOADOUT },
+      lastChannelId: null,
+      lastRoom: null,
     };
   }
 }
 
 function fakeRooms(channelId: string): RoomInfo[] {
-  const maps: MapId[] = ["depot", "harbor", "bazaar"];
+  const maps: MapId[] = ["depot", "harbor", "bazaar", "library", "street"];
   const modes: Mode[] = ["demolition", "demolition", "tdm", "demolition", "elimination"];
   const names = [
     "RANKED #1",
@@ -113,7 +141,8 @@ function fakeRooms(channelId: string): RoomInfo[] {
   ];
   return names.map((name, i) => {
     const cap = i % 3 === 2 ? 10 : 8;
-    const players = (Math.abs(hash(`${channelId}${i}`)) % cap) + (i === 0 ? 1 : 0);
+    let players = (Math.abs(hash(`${channelId}${i}`)) % cap) + (i === 0 ? 1 : 0);
+    if (i === 2 || i === 4) players = cap;
     return {
       id: `${channelId}-${i}`,
       name,
@@ -179,6 +208,8 @@ type State = {
   result: ResultState | null;
   lastScore: { ct: number; tr: number } | null;
   lastMvp: string | null;
+  lastChannelId: string | null;
+  lastRoom: RoomInfo | null;
   autoLaunch: boolean;
   launching: boolean;
   matchKey: number;
@@ -197,6 +228,8 @@ type State = {
   quickMatch: () => void;
   swapTeam: () => void;
   toggleReady: () => void;
+  kickPlayer: (name: string) => void;
+  toggleLock: () => void;
   startMatch: () => void;
   leaveRoom: () => void;
   pushChat: (from: string, text: string) => void;
@@ -224,6 +257,8 @@ function persistNow(s: State) {
         settings: s.settings,
         stats: s.stats,
         loadout: s.loadout,
+        lastChannelId: s.lastChannelId,
+        lastRoom: s.lastRoom,
       }),
     );
   } catch {
@@ -267,6 +302,8 @@ export const usePB = create<State>((set, get) => {
     settings: DEFAULT_SETTINGS,
     stats: { matches: 0, kills: 0, wins: 0 },
     loadout: { ...DEFAULT_LOADOUT },
+    lastChannelId: null,
+    lastRoom: null,
   };
 
   return {
@@ -289,6 +326,8 @@ export const usePB = create<State>((set, get) => {
     result: null,
     lastScore: null,
     lastMvp: null,
+    lastChannelId: null,
+    lastRoom: null,
     autoLaunch: false,
     launching: false,
     matchKey: 0,
@@ -326,17 +365,23 @@ export const usePB = create<State>((set, get) => {
         settings: saved.settings,
         stats: saved.stats,
         loadout: saved.loadout,
+        lastChannelId: saved.lastChannelId,
+        lastRoom: saved.lastRoom,
       });
     },
     go: (p) => set({ phase: p, showShop: false, showSettings: false }),
     openChannels: () => set({ phase: "channels", showShop: false, showSettings: false }),
-    enterChannel: (c) => set({ channel: c, rooms: fakeRooms(c.id), phase: "rooms" }),
+    enterChannel: (c) => {
+      set({ channel: c, rooms: fakeRooms(c.id), phase: "rooms", lastChannelId: c.id });
+      persistNow(get());
+    },
     joinRoom: (r) => {
       const s = get();
       const team: Team = r.mode === "demolition" ? "TR" : "CT";
       const slots = emptySlots(team, s.nick, r.cap);
       set({
         room: { ...r, players: slots.filter((x) => !x.empty).length },
+        lastRoom: { ...r },
         phase: "waiting",
         team,
         ready: true,
@@ -347,6 +392,7 @@ export const usePB = create<State>((set, get) => {
           { id: chatId++, from: "SYSTEM", text: `${s.nick.toUpperCase()} entered ${r.name}` },
         ],
       });
+      persistNow(get());
     },
     createRoom: (map, mode, name) => {
       const s = get();
@@ -363,10 +409,10 @@ export const usePB = create<State>((set, get) => {
       get().joinRoom(r);
     },
     quickMatch: () => {
-      const maps: MapId[] = ["depot", "harbor", "bazaar"];
+      const maps: MapId[] = ["depot", "harbor", "bazaar", "library", "street"];
       const map = maps[Math.floor(Math.random() * maps.length)]!;
       const s = get();
-      if (!s.channel) set({ channel: CHANNELS[0]! });
+      if (!s.channel) set({ channel: CHANNELS[0]!, lastChannelId: CHANNELS[0]!.id });
       get().createRoom(map, "demolition", "QUICK MATCH");
     },
     swapTeam: () => {
@@ -384,6 +430,36 @@ export const usePB = create<State>((set, get) => {
         ready,
         slots: get().slots.map((sl) => (sl.you ? { ...sl, ready } : sl)),
       });
+    },
+    kickPlayer: (name) => {
+      const s = get();
+      if (s.launching || s.phase !== "waiting") return;
+      const hit = s.slots.find((sl) => !sl.empty && !sl.you && sl.name === name);
+      if (!hit) return;
+      const slots = s.slots.map((sl) =>
+        sl === hit ? { name: "", team: sl.team, ready: false, you: false, ping: 0, empty: true } : sl,
+      );
+      const players = slots.filter((x) => !x.empty).length;
+      set({
+        slots,
+        room: s.room ? { ...s.room, players } : s.room,
+        chat: [...s.chat.slice(-40), { id: chatId++, from: "SYSTEM", text: `${name} was kicked` }],
+      });
+    },
+    toggleLock: () => {
+      const s = get();
+      if (s.launching || s.phase !== "waiting" || !s.room) return;
+      const locked = !s.room.locked;
+      const room = { ...s.room, locked };
+      set({
+        room,
+        lastRoom: s.lastRoom && s.lastRoom.id === room.id ? { ...s.lastRoom, locked } : { ...room },
+        chat: [
+          ...s.chat.slice(-40),
+          { id: chatId++, from: "SYSTEM", text: locked ? "Room locked" : "Room unlocked" },
+        ],
+      });
+      persistNow(get());
     },
     sendChat: (text) => {
       const msg = text.trim().slice(0, 80);

@@ -14,7 +14,7 @@ import {
   type BombSite,
   type MapBuilt,
 } from "./world";
-import { createParticleSystem, createViewmodel, createWorldGun, poseViewmodel } from "./viewmodels";
+import { createParticleSystem, createViewmodel, createWorldGun, poseViewmodel, preloadGuns } from "./viewmodels";
 import { BOT_NAMES, STR } from "./strings";
 
 const STEP = 1 / 60;
@@ -40,9 +40,12 @@ export type EngineHandle = {
   getScoreRows: () => ScoreRow[];
   getSpray: () => { shotI: number; recoilP: number; recoilY: number; weapon: WeaponId };
   requestLock: () => void;
+  useMouse: (on: boolean) => void;
   input: InputHandle;
   buy: (id: WeaponId) => boolean;
   buyArmor: () => boolean;
+  dropBomb: () => void;
+  dropGun: () => void;
 };
 
 type Actor = {
@@ -215,12 +218,21 @@ export function createEngine(
 
   let viewGun = createViewmodel(cfg.loadout.primary);
   overlay.add(viewGun);
+  void preloadGuns().then(() => {
+    overlay.remove(viewGun);
+    viewGun.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.geometry) m.geometry.dispose();
+    });
+    viewGun = createViewmodel(player.weapon);
+    overlay.add(viewGun);
+  });
 
   const actors: Actor[] = [];
   const nades: Nade[] = [];
   const smokes: Smoke[] = [];
   const decals: THREE.Mesh[] = [];
-  const tracers: Array<{ line: THREE.Line; life: number }> = [];
+  const tracers: Array<{ obj: THREE.Object3D; life: number }> = [];
 
   let paused = false;
   let ended = false;
@@ -241,12 +253,23 @@ export function createEngine(
   let defuseProg = 0;
   let pickProg = 0;
   let bombLoose = false;
+  const slotGone = { primary: false, pistol: false };
+  type GroundGun = {
+    id: WeaponId;
+    mag: number;
+    reserve: number;
+    x: number;
+    z: number;
+    mesh: THREE.Group;
+  };
+  let ground: GroundGun[] = [];
   let plantSite: BombSite | null = null;
   let announcer = "5";
   let announcerT = 1.15;
   let bannerKind: HudSnapshot["bannerKind"] = "count";
   let bannerTeam: Team | null = null;
   let firstBlood = false;
+  let clutchCall = false;
   let roundMvp = "";
   let bombWarn = false;
   let killMsg = "";
@@ -255,6 +278,10 @@ export function createEngine(
   let killGun = "";
   let hitmarker = 0;
   let headshotMk = false;
+  let dmgAmt = 0;
+  let dmgHead = false;
+  let dmgT = 0;
+  let dmgStack = 0;
   let hurt = 0;
   let hurtDir = 0;
   let flash = 0;
@@ -266,6 +293,8 @@ export function createEngine(
   let lookingHp = 0;
   let siteHint = "";
   let money = 4000;
+  let cashPop = 0;
+  let cashT = 0;
   const MONEY_CAP = 12000;
   const ARMOR_COST = 400;
   let nadeId: WeaponId = cfg.loadout.nade;
@@ -293,6 +322,7 @@ export function createEngine(
   let disposed = false;
   let bob = 0;
   let adsAmt = 0;
+  let boltLock = 0;
   let vmKick = 0;
   let vmDrop = 0;
   let vmCycle = 0;
@@ -300,7 +330,7 @@ export function createEngine(
   let roundResetting = 0;
   let captured = false;
   let live = false;
-  const touchPlay = isCoarsePointer();
+  let touchPlay = isCoarsePointer();
 
   const names = BOT_NAMES.filter((n) => n !== cfg.nickname.toUpperCase());
   let ni = 0;
@@ -400,6 +430,7 @@ export function createEngine(
     bombMesh = createBombProp();
     bombMesh.visible = false;
     scene.add(bombMesh);
+    giveBomb();
   }
 
   function resize() {
@@ -485,19 +516,7 @@ export function createEngine(
     return best;
   }
 
-  function addDecal(x: number, y: number, z: number, nx: number, ny: number, nz: number, blood = false) {
-    const size = blood ? 0.42 : 0.12;
-    const m = new THREE.Mesh(
-      new THREE.PlaneGeometry(size, size),
-      new THREE.MeshBasicMaterial({
-        color: blood ? 0x6a1010 : 0x1a120c,
-        transparent: true,
-        opacity: blood ? 0.85 : 0.75,
-        depthWrite: false,
-      }),
-    );
-    m.position.set(x + nx * 0.015, y + ny * 0.015, z + nz * 0.015);
-    m.lookAt(x + nx, y + ny, z + nz);
+  function pushDecal(m: THREE.Mesh) {
     scene.add(m);
     decals.push(m);
     if (decals.length > 64) {
@@ -506,6 +525,86 @@ export function createEngine(
       old.geometry.dispose();
       (old.material as THREE.Material).dispose();
     }
+  }
+
+  function addDecal(x: number, y: number, z: number, nx: number, ny: number, nz: number, blood = false) {
+    if (blood) {
+      const m = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.42, 0.42),
+        new THREE.MeshBasicMaterial({
+          color: 0x6a1010,
+          transparent: true,
+          opacity: 0.85,
+          depthWrite: false,
+        }),
+      );
+      m.position.set(x + nx * 0.015, y + ny * 0.015, z + nz * 0.015);
+      m.lookAt(x + nx, y + ny, z + nz);
+      pushDecal(m);
+      return;
+    }
+    const nlen = Math.hypot(nx, ny, nz) || 1;
+    const ux = nx / nlen;
+    const uy = ny / nlen;
+    const uz = nz / nlen;
+    const layers: Array<{ size: number; color: number; opacity: number; lift: number }> = [
+      { size: 0.18, color: 0x1a120c, opacity: 0.78, lift: 0.012 },
+      { size: 0.08, color: 0x070504, opacity: 0.94, lift: 0.022 },
+    ];
+    for (const layer of layers) {
+      const m = new THREE.Mesh(
+        new THREE.PlaneGeometry(layer.size, layer.size),
+        new THREE.MeshBasicMaterial({
+          color: layer.color,
+          transparent: true,
+          opacity: layer.opacity,
+          depthWrite: false,
+          polygonOffset: true,
+          polygonOffsetFactor: -2,
+        }),
+      );
+      m.position.set(x + ux * layer.lift, y + uy * layer.lift, z + uz * layer.lift);
+      m.lookAt(m.position.x + ux, m.position.y + uy, m.position.z + uz);
+      m.rotateZ(Math.random() * Math.PI * 2);
+      pushDecal(m);
+    }
+  }
+
+  function disposeStreak(obj: THREE.Object3D) {
+    scene.remove(obj);
+    obj.traverse((child) => {
+      if (!(child instanceof THREE.Mesh)) return;
+      child.geometry.dispose();
+      const mat = child.material;
+      if (Array.isArray(mat)) {
+        for (const m of mat) m.dispose();
+      } else {
+        mat.dispose();
+      }
+    });
+  }
+
+  function pushStreak(obj: THREE.Object3D, life: number) {
+    scene.add(obj);
+    tracers.push({ obj, life });
+    while (tracers.length > 48) {
+      const old = tracers.shift();
+      if (old) disposeStreak(old.obj);
+    }
+  }
+
+  function streakMat(color: number, opacity: number) {
+    const mat = new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      toneMapped: false,
+      fog: false,
+    });
+    mat.userData.op = opacity;
+    return mat;
   }
 
   function tracer(
@@ -517,16 +616,77 @@ export function createEngine(
     bz: number,
     color = 0xffe08a,
   ) {
-    const geo = new THREE.BufferGeometry().setFromPoints([
-      new THREE.Vector3(ax, ay, az),
-      new THREE.Vector3(bx, by, bz),
-    ]);
-    const line = new THREE.Line(
-      geo,
-      new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.95 }),
-    );
-    scene.add(line);
-    tracers.push({ line, life: 0.16 });
+    const dx = bx - ax;
+    const dy = by - ay;
+    const dz = bz - az;
+    const L = Math.hypot(dx, dy, dz);
+    if (L < 0.05) return;
+    const inv = 1 / L;
+    const dir = new THREE.Vector3(dx * inv, dy * inv, dz * inv);
+    const inset = Math.min(0.35, Math.max(0, L - 0.05));
+    const sx = ax + dir.x * inset;
+    const sy = ay + dir.y * inset;
+    const sz = az + dir.z * inset;
+    const vis = L - inset;
+    const group = new THREE.Group();
+    group.position.set((sx + bx) * 0.5, (sy + by) * 0.5, (sz + bz) * 0.5);
+    group.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+    group.add(new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, vis, 6), streakMat(0xffffff, 1)));
+    group.add(new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, vis, 6), streakMat(color, 0.45)));
+    pushStreak(group, 0.11);
+  }
+
+  function spark(x: number, y: number, z: number, nx: number, ny: number, nz: number, color = 0xffe7b0) {
+    let ux = nx;
+    let uy = ny;
+    let uz = nz;
+    const nlen = Math.hypot(ux, uy, uz);
+    if (nlen < 1e-5) {
+      ux = 0;
+      uy = 1;
+      uz = 0;
+    } else {
+      ux /= nlen;
+      uy /= nlen;
+      uz /= nlen;
+    }
+    const n = new THREE.Vector3(ux, uy, uz);
+    const helper = Math.abs(n.y) > 0.85 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+    const t1 = new THREE.Vector3().crossVectors(n, helper).normalize();
+    const t2 = new THREE.Vector3().crossVectors(n, t1).normalize();
+    const group = new THREE.Group();
+    group.position.set(x + ux * 0.03, y + uy * 0.03, z + uz * 0.03);
+    const cam = new THREE.Vector3();
+    camera.getWorldPosition(cam);
+    const toCam = cam.sub(new THREE.Vector3(x, y, z));
+    const count = 6 + Math.floor(Math.random() * 3);
+    const fly: Array<{ mesh: THREE.Object3D; vx: number; vy: number; vz: number }> = [];
+    for (let i = 0; i < count; i++) {
+      const ang = rand(0, Math.PI * 2);
+      const spread = rand(0.08, 0.72);
+      const dir = new THREE.Vector3(
+        n.x + (t1.x * Math.cos(ang) + t2.x * Math.sin(ang)) * spread,
+        n.y + (t1.y * Math.cos(ang) + t2.y * Math.sin(ang)) * spread,
+        n.z + (t1.z * Math.cos(ang) + t2.z * Math.sin(ang)) * spread,
+      ).normalize();
+      const len = rand(0.12, 0.18);
+      const quad = new THREE.Mesh(new THREE.PlaneGeometry(0.012, len), streakMat(color, 1));
+      quad.material.side = THREE.DoubleSide;
+      const yAxis = dir.clone();
+      const xAxis = new THREE.Vector3().crossVectors(yAxis, toCam);
+      if (xAxis.lengthSq() < 1e-8) {
+        xAxis.crossVectors(yAxis, Math.abs(yAxis.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0));
+      }
+      xAxis.normalize();
+      const zAxis = new THREE.Vector3().crossVectors(xAxis, yAxis).normalize();
+      quad.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis));
+      quad.position.copy(dir).multiplyScalar(len * 0.5);
+      group.add(quad);
+      const speed = rand(2.4, 5.2);
+      fly.push({ mesh: quad, vx: dir.x * speed, vy: dir.y * speed, vz: dir.z * speed });
+    }
+    group.userData.fly = fly;
+    pushStreak(group, 0.14);
   }
 
   function burst(x: number, y: number, z: number, n: number, r: number, g: number, b: number, spd: number) {
@@ -590,7 +750,16 @@ export function createEngine(
     announce("5", 1.2, "count");
   }
 
-  function applyDamage(a: Actor, dmg: number, head: boolean, src: Actor, weapon: WeaponId) {
+  function applyDamage(
+    a: Actor,
+    dmg: number,
+    head: boolean,
+    src: Actor,
+    weapon: WeaponId,
+    hx?: number,
+    hy?: number,
+    hz?: number,
+  ) {
     if (!a.alive || a.spawnProt > 0 || ended || matchOver) return;
     if (a.team === src.team && !(a === src && WEAPONS[weapon].tribe === "nade")) return;
     let d = dmg;
@@ -605,6 +774,12 @@ export function createEngine(
       a.armor = Math.max(0, a.armor - d * 0.15);
       d *= 0.92;
     }
+    if (src === player && d > 0) {
+      if (dmgStack === 0) dmgHead = head;
+      else if (head) dmgHead = true;
+      dmgStack += d;
+      dmgT = 1.15;
+    }
     a.hp -= d;
     const prevHit = a.lastHitBy;
     a.lastHitBy = src.id;
@@ -618,6 +793,10 @@ export function createEngine(
       audio.hurt(worldPan(src.x, src.z), vestHit);
     }
     burst(a.x, a.y + (head ? 1.62 : 1.1), a.z, head ? 32 : 20, 0.95, 0.07, 0.05, 3.6);
+    const ix = hx ?? a.x;
+    const iy = hy ?? a.y + (head ? 1.55 : 1.05);
+    const iz = hz ?? a.z;
+    spark(ix, iy, iz, 0, 1, 0, 0xff1a12);
     addDecal(a.x, a.y + 0.05, a.z, 0, 1, 0, true);
     if (a.hp <= 0) {
       a.hp = 0;
@@ -648,6 +827,12 @@ export function createEngine(
         killBy = false;
         killGun = WEAPONS[weapon].name;
         hitStop = 0.05;
+        if (a !== player) {
+          const pay = head ? 450 : 300;
+          money = Math.min(MONEY_CAP, money + pay);
+          cashPop = pay;
+          cashT = 1.6;
+        }
         if (streak >= 5) announce(T.ace, 1.8, "multi");
         else if (streak === 4) announce(T.quad, 1.7, "multi");
         else if (streak === 3) announce(T.triple, 1.6, "multi");
@@ -656,6 +841,10 @@ export function createEngine(
         trauma = Math.min(1, trauma + 0.42 * cfg.settings.shake);
       }
       if (a === player) {
+        const held = WEAPONS[a.weapon];
+        if ((held.slot === "primary" || held.slot === "pistol") && !slotGone[held.slot]) {
+          layGun(held.slot, a.weapon, a.mag, a.reserve, a.x, a.z);
+        }
         streak = 0;
         trauma = Math.min(1, trauma + 0.5);
         killMsg = src.name;
@@ -663,10 +852,12 @@ export function createEngine(
         killBy = true;
         killGun = WEAPONS[weapon].name;
       }
-      if (carrier === a) {
+      if (carrier === a && !bombPlanted) {
         carrier = null;
+        bombLoose = true;
         bombX = a.x;
         bombZ = a.z;
+        announce("C4 DROPPED", 1.4, "bomb");
       }
       onEvent({
         type: "kill",
@@ -704,7 +895,7 @@ export function createEngine(
       a.vz += dir.z * lung;
       const hit = rayActors(origin.x, origin.y, origin.z, dir.x, dir.y, dir.z, w.range, a);
       if (hit) {
-        applyDamage(hit.actor, w.dmg, hit.head, a, w.id);
+        applyDamage(hit.actor, w.dmg, hit.head, a, w.id, hit.x, hit.y, hit.z);
         if (a === player) {
           hitmarker = 0.18;
           headshotMk = hit.head;
@@ -729,6 +920,10 @@ export function createEngine(
       vmKick = 0.08 + w.dmg * 0.001;
       trauma = Math.min(1, trauma + 0.08 * cfg.settings.shake);
       audio.gun(w.id);
+      if (w.reloadStyle === "bolt") {
+        boltLock = 0.62;
+        adsAmt = 0;
+      }
       if (w.reloadStyle === "tube" || w.reloadStyle === "bolt" || w.reloadStyle === "slide") {
         vmCycle = 1;
         audio.cycle(w.id);
@@ -760,8 +955,9 @@ export function createEngine(
     const ads = a === player && adsAmt > 0.5;
     const crouch = a.crouch;
     const airborne = a.y > 0.1;
+    const walkingShot = a === player && input.actions.walk && !input.actions.sprint && !a.crouch;
     const spread =
-      spreadOf(w, moving, ads, crouch, airborne) + (a.bot ? (1 - a.skill) * 0.025 : 0);
+      spreadOf(w, moving, ads, crouch, airborne, walkingShot) + (a.bot ? (1 - a.skill) * 0.025 : 0);
     for (let p = 0; p < w.pellets; p++) {
       const d = dir.clone();
       if (spread > 0.0004) {
@@ -790,7 +986,7 @@ export function createEngine(
         if (actHit && (!worldHit || actHit.t < worldHit.t)) {
           end.set(actHit.x, actHit.y, actHit.z);
           const fall = clamp(1 - (actHit.t / w.range) * 0.4, 0.55, 1);
-          applyDamage(actHit.actor, w.dmg * fall * dmgMul, actHit.head, a, w.id);
+          applyDamage(actHit.actor, w.dmg * fall * dmgMul, actHit.head, a, w.id, actHit.x, actHit.y, actHit.z);
           if (a === player) {
             hitmarker = 0.16;
             headshotMk = actHit.head;
@@ -804,6 +1000,15 @@ export function createEngine(
         }
         end.set(worldHit.x, worldHit.y, worldHit.z);
         addDecal(worldHit.x, worldHit.y, worldHit.z, worldHit.nx, worldHit.ny, worldHit.nz);
+        const wn = Math.hypot(worldHit.nx, worldHit.ny, worldHit.nz);
+        spark(
+          worldHit.x,
+          worldHit.y,
+          worldHit.z,
+          wn > 1e-5 ? worldHit.nx : 0,
+          wn > 1e-5 ? worldHit.ny : 1,
+          wn > 1e-5 ? worldHit.nz : 0,
+        );
         burst(worldHit.x, worldHit.y, worldHit.z, 4, 0.55, 0.5, 0.4, 1.4);
         const box = world.colliders[worldHit.i];
         if (!box || walls >= maxWalls) break;
@@ -816,7 +1021,7 @@ export function createEngine(
         oz = worldHit.z + d.z * (thick + 0.05);
         remain -= worldHit.t + thick;
       }
-      if (p === 0) {
+      if (p < 4) {
         const col =
           w.id === "sr98" ? 0xffffff : w.id === "mp5n" || w.id === "g18c" ? 0xffc070 : 0xffe08a;
         tracer(origin.x, origin.y, origin.z, end.x, end.y, end.z, col);
@@ -899,6 +1104,7 @@ export function createEngine(
       overlay.add(viewGun);
       vmDrop = 0.2;
       vmCycle = 0;
+      boltLock = 0;
       audio.ui();
     }
   }
@@ -1227,6 +1433,11 @@ export function createEngine(
 
   function pickSlot(id: WeaponId) {
     if (!player.alive) return;
+    const slot = WEAPONS[id].slot;
+    if ((slot === "primary" && slotGone.primary) || (slot === "pistol" && slotGone.pistol)) {
+      audio.empty();
+      return;
+    }
     if (WEAPONS[id].slot === "nade" && player.nades <= 0) {
       audio.empty();
       if (WEAPONS[player.weapon].slot === "nade") stowNade();
@@ -1249,6 +1460,8 @@ export function createEngine(
       i = (i + dir + 4) % 4;
       const id = b[i]!;
       if (WEAPONS[id].slot === "nade" && player.nades <= 0) continue;
+      if (WEAPONS[id].slot === "primary" && slotGone.primary) continue;
+      if (WEAPONS[id].slot === "pistol" && slotGone.pistol) continue;
       pickSlot(id);
       return;
     }
@@ -1277,8 +1490,9 @@ export function createEngine(
       return;
     }
     const wdef = WEAPONS[player.weapon];
-    const wantAds = act.ads && wdef.slot !== "melee" && wdef.slot !== "nade" && !act.sprint;
-    adsAmt = THREE.MathUtils.damp(adsAmt, wantAds ? 1 : 0, 12, dt);
+    const wantAds =
+      act.ads && wdef.slot !== "melee" && wdef.slot !== "nade" && !act.sprint && boltLock <= 0;
+    adsAmt = boltLock > 0 ? 0 : THREE.MathUtils.damp(adsAmt, wantAds ? 1 : 0, 12, dt);
     if (freeze > 0) {
       player.vx = 0;
       player.vz = 0;
@@ -1301,15 +1515,30 @@ export function createEngine(
       if (act.justReload) startReload(player);
       return;
     }
+    const walking = !!(act.walk && !act.crouch);
     const speed =
-      (act.crouch ? 2.6 : act.sprint && !wantAds ? 8.6 : 6.15) * wdef.speed * (wantAds ? 0.72 : 1);
+      (act.crouch ? 2.6 : act.sprint && !wantAds ? 8.6 : walking ? 3.15 : 6.15) *
+      wdef.speed *
+      (wantAds ? 0.72 : 1);
     const f = forwardOf(player.yaw);
     const r = rightOf(player.yaw);
     const wishX = f.x * act.moveY + r.x * act.moveX;
     const wishZ = f.z * act.moveY + r.z * act.moveX;
-    const accel = player.y > 0.08 ? 8 : 18;
-    player.vx += (wishX * speed - player.vx) * Math.min(1, accel * dt);
-    player.vz += (wishZ * speed - player.vz) * Math.min(1, accel * dt);
+    const spdNow = Math.hypot(player.vx, player.vz);
+    const opposing =
+      player.y <= 0.08 &&
+      Math.hypot(wishX, wishZ) > 0.2 &&
+      spdNow > 0.9 &&
+      wishX * player.vx + wishZ * player.vz < -0.2;
+    if (opposing) {
+      const brake = Math.min(1, 46 * dt);
+      player.vx *= 1 - brake;
+      player.vz *= 1 - brake;
+    } else {
+      const accel = player.y > 0.08 ? 8 : 18;
+      player.vx += (wishX * speed - player.vx) * Math.min(1, accel * dt);
+      player.vz += (wishZ * speed - player.vz) * Math.min(1, accel * dt);
+    }
     if (act.justJump && player.y <= 0.05) player.vy = JUMP;
     player.vy -= GRAV * dt;
     const moved = moveCylinder(
@@ -1330,8 +1559,8 @@ export function createEngine(
     if (moved.grounded && player.vy < 0) player.vy = 0;
     const moving = Math.hypot(player.vx, player.vz) > 1.2 && moved.grounded;
     if (moving) {
-      player.bob += dt * (act.sprint ? 10 : 8);
-      audio.foot(!!act.sprint, 0, player.id, !!act.crouch);
+      player.bob += dt * (act.sprint ? 10 : walking ? 6 : 8);
+      audio.foot(!!act.sprint, 0, player.id, !!act.crouch, 0, walking);
     }
     if (act.justReload) startReload(player);
 
@@ -1388,6 +1617,10 @@ export function createEngine(
     plantProg = Math.max(0, plantProg);
     defuseProg = Math.max(0, defuseProg);
     pickProg = Math.max(0, pickProg);
+    if (freeze <= 0 && roundResetting <= 0 && act.justDrop && player.alive) {
+      if (cfg.mode === "demolition" && carrier === player && !bombPlanted) dropPlayerBomb();
+      else dropPlayerGun();
+    }
     if (cfg.mode === "demolition" && freeze <= 0 && roundResetting <= 0) {
       if (bombPlanted) {
         plantProg = 0;
@@ -1399,14 +1632,14 @@ export function createEngine(
           pickProg += dt;
           if (pickProg >= PICK_TIME) {
             bombLoose = false;
-            carrier = null;
+            carrier = player;
             pickProg = 0;
           }
         } else pickProg = 0;
       } else {
         pickProg = 0;
       }
-      if (!bombPlanted && player.team === "TR" && player.alive) {
+      if (!bombPlanted && carrier === player && player.team === "TR" && player.alive) {
         const site = world.sites.find((s) => inSite(s, player.x, player.z));
         if (site) {
           siteHint = `${T.holdPlant} ${site.name}`;
@@ -1445,6 +1678,13 @@ export function createEngine(
             }
           } else defuseProg = 0;
         } else defuseProg = 0;
+      }
+    }
+    if (!siteHint && freeze <= 0 && roundResetting <= 0 && player.alive) {
+      const near = ground.find((g) => Math.hypot(player.x - g.x, player.z - g.z) < 1.55);
+      if (near) {
+        siteHint = `E · ${WEAPONS[near.id].name}`;
+        if (act.justUse && Math.hypot(player.vx, player.vz) < 1.6) takeGround(near);
       }
     }
   }
@@ -1503,7 +1743,6 @@ export function createEngine(
         const site = plantSite ?? world.sites[0] ?? null;
         rushing = true;
         const execute = matchTime < ROUND_TIME - 12;
-        const playerPlanting = player.alive && player.team === "TR" && plantProg > 0.2;
         const playerDefusing = player.alive && player.team === "CT" && defuseProg > 0.2;
 
         if (!bombPlanted && bombLoose && b.team === "TR") {
@@ -1517,14 +1756,12 @@ export function createEngine(
             b.vz *= 0.15;
             if (b.plantT >= PICK_TIME) {
               bombLoose = false;
-              carrier = null;
+              carrier = b;
               b.plantT = 0;
             }
           }
-        } else if (!bombPlanted && b.team === "TR" && site) {
-          const planter = lockedBot("plant", "TR", site.x, site.z);
-          const isPlanter = !playerPlanting && planter === b;
-          if (isPlanter) {
+        } else if (!bombPlanted && !bombLoose && b.team === "TR" && carrier && site) {
+          if (carrier === b) {
             const aim = towardSite(site, b.x, b.z);
             goalX = aim.x;
             goalZ = aim.z;
@@ -1560,11 +1797,11 @@ export function createEngine(
             } else {
               b.plantT = 0;
             }
-          } else {
+          } else if (carrier.alive) {
             const ang = (b.wp % 8) * 0.9;
-            goalX = site.x + Math.cos(ang) * 6.2;
-            goalZ = site.z + Math.sin(ang) * 6.2;
-            if (Math.hypot(b.x - site.x, b.z - site.z) > 9) commit = true;
+            goalX = carrier.x + Math.cos(ang) * 4.4;
+            goalZ = carrier.z + Math.sin(ang) * 4.4;
+            if (Math.hypot(b.x - carrier.x, b.z - carrier.z) > 7.5) commit = true;
             b.plantT = 0;
           }
         } else if (bombPlanted && b.team === "TR") {
@@ -1808,8 +2045,112 @@ export function createEngine(
     }
   }
 
+  function disposeGroup(mesh: THREE.Object3D) {
+    mesh.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.geometry) m.geometry.dispose();
+    });
+  }
+
+  function layGun(slot: "primary" | "pistol", id: WeaponId, mag: number, reserve: number, x: number, z: number) {
+    const mesh = createWorldGun(id);
+    mesh.position.set(x, 0.2, z);
+    mesh.rotation.y = player.yaw + Math.PI;
+    scene.add(mesh);
+    ground.push({ id, mag, reserve, x, z, mesh });
+    slotGone[slot] = true;
+  }
+
+  function ammoOf(id: WeaponId): { mag: number; reserve: number } {
+    if (player.weapon === id) return { mag: player.mag, reserve: player.reserve };
+    const saved = player.ammo[id];
+    if (saved) return saved;
+    const w = WEAPONS[id];
+    return { mag: magOf(w), reserve: w.reserve };
+  }
+
+  function clearGround() {
+    for (const g of ground) {
+      scene.remove(g.mesh);
+      disposeGroup(g.mesh);
+    }
+    ground = [];
+    slotGone.primary = false;
+    slotGone.pistol = false;
+  }
+
+  function dropPlayerGun() {
+    if (!player.alive || freeze > 0) return;
+    const w = WEAPONS[player.weapon];
+    if (w.slot !== "primary" && w.slot !== "pistol") {
+      audio.empty();
+      return;
+    }
+    if (slotGone[w.slot]) return;
+    const f = forwardOf(player.yaw);
+    layGun(w.slot, player.weapon, player.mag, player.reserve, player.x + f.x * 0.75, player.z + f.z * 0.75);
+    const next: WeaponId =
+      w.slot === "primary" && !slotGone.pistol
+        ? player.pistol
+        : w.slot === "pistol" && !slotGone.primary
+          ? player.primary
+          : "knife";
+    pickSlot(next);
+    hud.weapon = player.weapon;
+    hud.weaponName = WEAPONS[player.weapon].name;
+    hud.primaryOut = slotGone.primary;
+    hud.pistolOut = slotGone.pistol;
+  }
+
+  function takeGround(g: GroundGun) {
+    const slot = WEAPONS[g.id].slot;
+    if (slot !== "primary" && slot !== "pistol") return;
+    if (!slotGone[slot]) {
+      const cur = slot === "primary" ? player.primary : player.pistol;
+      const am = ammoOf(cur);
+      layGun(slot, cur, am.mag, am.reserve, g.x + 0.45, g.z);
+    }
+    if (slot === "primary") player.primary = g.id;
+    else player.pistol = g.id;
+    slotGone[slot] = false;
+    player.ammo[g.id] = { mag: g.mag, reserve: g.reserve };
+    scene.remove(g.mesh);
+    disposeGroup(g.mesh);
+    ground = ground.filter((x) => x !== g);
+    pickSlot(g.id);
+    hud.weapon = player.weapon;
+    hud.weaponName = WEAPONS[player.weapon].name;
+    hud.primaryOut = slotGone.primary;
+    hud.pistolOut = slotGone.pistol;
+    audio.ui();
+  }
+
+  function dropPlayerBomb() {
+    if (carrier !== player || bombPlanted || !player.alive || cfg.mode !== "demolition") return;
+    carrier = null;
+    bombLoose = true;
+    bombX = player.x;
+    bombZ = player.z;
+    plantProg = 0;
+    announce("C4 DROPPED", 1.4, "bomb");
+  }
+
   function living(team: Team) {
     return actors.filter((a) => a.team === team && a.alive).length;
+  }
+
+  function giveBomb() {
+    if (cfg.mode !== "demolition" || bombPlanted) return;
+    bombLoose = false;
+    const trs = actors.filter((a) => a.team === "TR" && a.alive);
+    if (player.team === "TR" && player.alive) carrier = player;
+    else carrier = trs.find((a) => a.bot) ?? trs[0] ?? null;
+    if (!carrier) {
+      bombLoose = true;
+      const s = world.sites[0];
+      bombX = s?.x ?? 0;
+      bombZ = s?.z ?? 0;
+    }
   }
 
   function defuseWin() {
@@ -1907,6 +2248,7 @@ export function createEngine(
       bot: a.bot,
       alive: a.alive,
       rkills: a.rkills,
+      bomb: !bombPlanted && !bombLoose && carrier?.id === a.id,
     }));
   }
 
@@ -1925,12 +2267,14 @@ export function createEngine(
     carrier = null;
     siteHint = "";
     firstBlood = false;
+    clutchCall = false;
     streak = 0;
     lockedPlanter = null;
     lockedDefuser = null;
     pendingWin = null;
     pendingWinT = 0;
     kitFrac = 0;
+    clearGround();
     clearWorldFX();
     for (const a of actors) {
       spawnActor(a);
@@ -1939,6 +2283,7 @@ export function createEngine(
     player.mesh.visible = false;
     if (cfg.mode === "demolition") {
       plantSite = chooseSite();
+      giveBomb();
     }
     roundResetting = 0;
   }
@@ -1975,6 +2320,9 @@ export function createEngine(
       if (live) {
         const prev = freeze;
         freeze = Math.max(0, freeze - dt);
+        if (prev > 0 && freeze <= 0) {
+          for (const a of actors) a.spawnProt = 0;
+        }
         const nowN = Math.ceil(freeze - FREEZE_GO);
         const prevN = Math.ceil(prev - FREEZE_GO);
         if (nowN !== prevN && nowN >= 1 && nowN <= 5) announce(String(nowN), 1.2, "count");
@@ -2016,6 +2364,14 @@ export function createEngine(
       if (living("CT") === 0) endRound("TR");
       else if (living("TR") === 0 && !bombPlanted) endRound("CT");
       else if (matchTime <= 0 && !bombPlanted) endRound("CT");
+      else if (!clutchCall && player.alive && freeze <= 0) {
+        const mine = living(player.team);
+        const theirs = living(player.team === "CT" ? "TR" : "CT");
+        if (mine === 1 && theirs >= 2) {
+          clutchCall = true;
+          announce("CLUTCH", 1.5, "mission", player.team);
+        }
+      }
     }
   }
 
@@ -2101,6 +2457,9 @@ export function createEngine(
     roundsTR: 0,
     hitmarker: 0,
     headshot: false,
+    dmg: 0,
+    dmgHead: false,
+    dmgT: 0,
     hurt: 0,
     flash: 0,
     killMsg: "",
@@ -2113,6 +2472,7 @@ export function createEngine(
     siteHint: "",
     allies: [],
     enemies: [],
+    tags: [],
     lookingName: "",
     lookingTeam: null,
     lookingHp: 0,
@@ -2127,14 +2487,24 @@ export function createEngine(
     bombZ: 0,
     bombVisible: false,
     money: 4000,
+    cash: 0,
+    cashT: 0,
     bloom: 0,
+    speed: 0,
+    spread: 0,
+    arc: false,
+    arcX: 0,
+    arcZ: 0,
     hurtDir: 0,
     sites: world.sites.map((s) => ({ name: s.name, x: s.x, z: s.z })),
+    blocks: [],
     bannerKind: "count",
     bannerTeam: null,
     kits: WEAPONS[cfg.loadout.primary].kits.slice(),
     reloadFrac: 0,
     carrying: false,
+    walking: false,
+    bolting: false,
     roundsToWin: cfg.mode === "tdm" ? 0 : ROUNDS_TO_WIN,
     bombSite: "",
     smoke: 0,
@@ -2146,6 +2516,8 @@ export function createEngine(
     primary: cfg.loadout.primary,
     pistol: cfg.loadout.pistol,
     nade: cfg.loadout.nade,
+    primaryOut: false,
+    pistolOut: false,
   };
 
   function writeHud() {
@@ -2173,6 +2545,9 @@ export function createEngine(
     hud.roundsTR = roundsTR;
     hud.hitmarker = hitmarker;
     hud.headshot = headshotMk;
+    hud.dmg = dmgAmt;
+    hud.dmgHead = dmgHead;
+    hud.dmgT = dmgT;
     hud.hurt = hurt;
     hud.flash = flash;
     hud.killMsg = killMsgT > 0 ? killMsg : "";
@@ -2215,19 +2590,45 @@ export function createEngine(
     hud.map = cfg.map;
     hud.team = cfg.team;
     hud.freeze = Math.max(0, freeze);
-    const bombOnMap = bombPlanted || bombLoose;
-    hud.bombX = bombOnMap ? bombX : 0;
-    hud.bombZ = bombOnMap ? bombZ : 0;
-    hud.bombVisible = bombOnMap;
+    const showBomb = bombPlanted || bombLoose || (!!carrier && player.team === "TR");
+    hud.bombX = bombPlanted || bombLoose ? bombX : carrier ? carrier.x : 0;
+    hud.bombZ = bombPlanted || bombLoose ? bombZ : carrier ? carrier.z : 0;
+    hud.bombVisible = showBomb;
     hud.money = money;
-    hud.bloom = player.recoilP;
+    hud.cash = cashPop;
+    hud.cashT = cashT;
+    const spd = Math.hypot(player.vx, player.vz);
+    const shotSpread = spreadOf(
+      w,
+      spd > 0.4,
+      adsAmt > 0.5,
+      player.crouch,
+      player.y > 0.1,
+      !!(input.actions.walk && !input.actions.sprint && !player.crouch),
+    );
+    hud.speed = spd;
+    hud.spread = shotSpread;
+    hud.bloom = player.recoilP + Math.max(0, shotSpread - w.spread) * 9;
     hud.hurtDir = hurtDir;
     hud.sites = world.sites.map((s) => ({ name: s.name, x: s.x, z: s.z }));
+    if (hud.blocks.length === 0) {
+      hud.blocks = world.colliders
+        .filter((c) => c.maxY > 1.8 && c.maxX - c.minX > 1.4 && c.maxZ - c.minZ > 1.4)
+        .slice(0, 36)
+        .map((c) => ({
+          x: (c.minX + c.maxX) / 2,
+          z: (c.minZ + c.maxZ) / 2,
+          w: c.maxX - c.minX,
+          d: c.maxZ - c.minZ,
+        }));
+    }
     hud.kits = w.kits;
     hud.reloadFrac = player.reloadT > 0 ? 1 - player.reloadT / Math.max(0.05, w.reload) : 0;
-    hud.carrying = cfg.mode === "demolition" && player.team === "TR" && player.alive && !bombPlanted;
+    hud.carrying = carrier === player && !bombPlanted;
+    hud.walking = !!(input.actions.walk && !input.actions.crouch && player.alive);
+    hud.bolting = boltLock > 0 && player.weapon === "sr98";
     hud.roundsToWin = cfg.mode === "tdm" ? 0 : ROUNDS_TO_WIN;
-    hud.bombSite = player.team === "TR" && !bombPlanted && plantSite ? plantSite.name : "";
+    hud.bombSite = carrier === player && !bombPlanted && plantSite ? plantSite.name : "";
     hud.cooking = cookT > 0 ? 1 - cookT / cookMax : 0;
     let smokeAmt = 0;
     for (const s of smokes) {
@@ -2241,6 +2642,8 @@ export function createEngine(
     hud.primary = player.primary;
     hud.pistol = player.pistol;
     hud.nade = nadeId;
+    hud.primaryOut = slotGone.primary;
+    hud.pistolOut = slotGone.pistol;
   }
 
   function update(dt: number) {
@@ -2275,6 +2678,13 @@ export function createEngine(
     }
     recoverRecoil(player, dt);
     hitmarker = Math.max(0, hitmarker - dt);
+    if (dmgStack > 0) {
+      dmgAmt = Math.round(dmgStack);
+      dmgStack = 0;
+    }
+    dmgT = Math.max(0, dmgT - dt * 0.8);
+    if (dmgT <= 0) dmgHead = false;
+    cashT = Math.max(0, cashT - dt * 0.55);
     hurt = Math.max(0, hurt - dt * 0.72);
     flash = Math.max(0, flash - dt * 0.28);
     killMsgT = Math.max(0, killMsgT - dt);
@@ -2285,6 +2695,7 @@ export function createEngine(
     const cyc = WEAPONS[player.weapon].reloadStyle;
     const cycDur = cyc === "bolt" ? 0.55 : cyc === "tube" ? 0.38 : 0.16;
     vmCycle = Math.max(0, vmCycle - dt / cycDur);
+    boltLock = Math.max(0, boltLock - dt);
     fovKick = Math.max(0, fovKick - dt * 8);
 
     handleInventory();
@@ -2303,13 +2714,30 @@ export function createEngine(
     fx.update(dt);
 
     for (let i = tracers.length - 1; i >= 0; i--) {
-      tracers[i]!.life -= dt;
-      const mat = tracers[i]!.line.material as THREE.LineBasicMaterial;
-      mat.opacity = Math.max(0, tracers[i]!.life * 10);
-      if (tracers[i]!.life <= 0) {
-        scene.remove(tracers[i]!.line);
-        tracers[i]!.line.geometry.dispose();
-        mat.dispose();
+      const streak = tracers[i]!;
+      streak.life -= dt;
+      const fly = streak.obj.userData.fly as
+        | Array<{ mesh: THREE.Object3D; vx: number; vy: number; vz: number }>
+        | undefined;
+      if (fly) {
+        for (const bit of fly) {
+          bit.mesh.position.x += bit.vx * dt;
+          bit.mesh.position.y += bit.vy * dt;
+          bit.mesh.position.z += bit.vz * dt;
+        }
+      }
+      const fade = Math.max(0, streak.life * 10);
+      streak.obj.traverse((child) => {
+        if (!(child instanceof THREE.Mesh)) return;
+        const mats = Array.isArray(child.material) ? child.material : [child.material];
+        for (const mat of mats) {
+          if (!(mat instanceof THREE.MeshBasicMaterial)) continue;
+          const base = typeof mat.userData.op === "number" ? mat.userData.op : 1;
+          mat.opacity = fade * base;
+        }
+      });
+      if (streak.life <= 0) {
+        disposeStreak(streak.obj);
         tracers.splice(i, 1);
       }
     }
@@ -2357,6 +2785,92 @@ export function createEngine(
     writeHud();
   }
 
+  const ARC_N = 22;
+  const arcPos = new Float32Array(ARC_N * 3);
+  let arcLine: THREE.Line | null = null;
+
+  function updateArc() {
+    const wpn = WEAPONS[player.weapon];
+    const show = player.alive && wpn.slot === "nade" && player.nades > 0;
+    if (!arcLine) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.BufferAttribute(arcPos, 3));
+      arcLine = new THREE.Line(
+        geo,
+        new THREE.LineBasicMaterial({ color: 0xff6a00, transparent: true, opacity: 0.9 }),
+      );
+      arcLine.frustumCulled = false;
+      scene.add(arcLine);
+    }
+    arcLine.visible = show;
+    if (!show) {
+      hud.arc = false;
+      return;
+    }
+    const dir = new THREE.Vector3();
+    camera.getWorldDirection(dir);
+    let x = player.x;
+    let y = player.y + (input.actions.crouch ? 1.15 : 1.58);
+    let z = player.z;
+    let vx = dir.x * 11.2 + player.vx * 0.35;
+    let vy = dir.y * 11.2 + 5.4;
+    let vz = dir.z * 11.2 + player.vz * 0.35;
+    let landed = false;
+    const step = 0.055;
+    for (let i = 0; i < ARC_N; i++) {
+      arcPos[i * 3] = x;
+      arcPos[i * 3 + 1] = y;
+      arcPos[i * 3 + 2] = z;
+      if (landed) continue;
+      vy -= GRAV * step;
+      const body = moveCylinder(x, y, z, 0.08, 0.16, vx * step, vy * step, vz * step, world.colliders);
+      if (body.hit) {
+        vx *= -0.48;
+        vz *= -0.48;
+        vy *= 0.32;
+      }
+      if (body.grounded) {
+        vy = Math.abs(vy) > 1.2 ? Math.abs(vy) * 0.38 : 0;
+        vx *= 0.72;
+        vz *= 0.72;
+        if (Math.hypot(vx, vz) < 0.55) landed = true;
+      }
+      x = body.x;
+      y = body.y;
+      z = body.z;
+    }
+    const attr = arcLine.geometry.getAttribute("position") as THREE.BufferAttribute;
+    attr.needsUpdate = true;
+    arcLine.geometry.computeBoundingSphere();
+    hud.arc = true;
+    hud.arcX = x;
+    hud.arcZ = z;
+  }
+
+  function writeTags() {
+    yawObj.updateWorldMatrix(true, true);
+    const fwd = forwardOf(player.yaw);
+    const tags: HudSnapshot["tags"] = [];
+    const v = new THREE.Vector3();
+    for (const a of actors) {
+      if (a === player || !a.alive || a.team !== player.team) continue;
+      const dx = a.x - player.x;
+      const dz = a.z - player.z;
+      if (dx * fwd.x + dz * fwd.z < 0.35) continue;
+      v.set(a.x, a.y + 1.92, a.z);
+      v.project(camera);
+      const x = (v.x * 0.5 + 0.5) * 100;
+      const y = (-v.y * 0.5 + 0.5) * 100;
+      if (x < -10 || x > 110 || y < -10 || y > 110) continue;
+      tags.push({
+        name: a.name,
+        x: Math.min(94, Math.max(6, x)),
+        y: Math.min(88, Math.max(8, y)),
+      });
+    }
+    hud.tags = tags;
+  }
+
   function render() {
     const eye = player.alive ? (input.actions.crouch ? 1.15 : 1.58) : 0.78;
     yawObj.position.set(player.x, player.y + eye, player.z);
@@ -2373,6 +2887,8 @@ export function createEngine(
     const targetFov = THREE.MathUtils.lerp(cfg.settings.fov, WEAPONS[player.weapon].adsFov, adsAmt);
     camera.fov = targetFov;
     camera.updateProjectionMatrix();
+    writeTags();
+    updateArc();
 
     const gx = THREE.MathUtils.lerp(0.28, 0.0, adsAmt);
     const gy = THREE.MathUtils.lerp(-0.26, -0.14, adsAmt) - vmDrop - Math.sin(player.bob) * 0.02;
@@ -2439,6 +2955,7 @@ export function createEngine(
       audio.dispose();
       ro.disconnect();
       world.dispose();
+      clearGround();
       fx.dispose();
       renderer.dispose();
       delete window.__controlsTest;
@@ -2463,9 +2980,16 @@ export function createEngine(
       paused = false;
       if (!touchPlay) input.requestLock();
     },
+    useMouse: (on: boolean) => {
+      touchPlay = !on;
+      input.setDesktop(on);
+      if (on) input.requestLock();
+    },
     input,
     buy,
     buyArmor,
+    dropBomb: dropPlayerBomb,
+    dropGun: dropPlayerGun,
   };
 }
 
@@ -2481,7 +3005,7 @@ declare global {
       setMoveStick: (x: number, y: number) => void;
       setLook: (x: number, y: number) => void;
       setAction: (
-        n: "fire" | "ads" | "jump" | "reload" | "crouch" | "use" | "sprint" | "pause",
+        n: "fire" | "ads" | "jump" | "reload" | "crouch" | "use" | "sprint" | "pause" | "walk",
         v: boolean,
       ) => void;
       setSlot: (n: number) => void;
@@ -2489,6 +3013,8 @@ declare global {
       buyArmor?: () => boolean;
       getHud?: () => HudSnapshot;
       getSpray?: () => { shotI: number; recoilP: number; recoilY: number; weapon: WeaponId };
+      dropBomb?: () => void;
+      dropGun?: () => void;
     };
   }
 }

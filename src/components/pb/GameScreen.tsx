@@ -10,6 +10,7 @@ import type { GameEvent, HudSnapshot, KitId, MatchConfig, ScoreRow, WeaponId } f
 import { isCoarsePointer, type TouchAction } from "@/game/input";
 import { usePB } from "@/game/store";
 import { STR, MAP_META } from "@/game/strings";
+import { playRadioCall, type RadioCallId } from "@/game/audio";
 import { PRIMARY_IDS, PISTOL_IDS, NADE_IDS, WEAPONS } from "@/game/weapons";
 
 type EngineHandle = {
@@ -18,16 +19,46 @@ type EngineHandle = {
   getScoreRows: () => ScoreRow[];
   getSpray: () => { shotI: number; recoilP: number; recoilY: number; weapon: WeaponId };
   requestLock: () => void;
+  useMouse: (on: boolean) => void;
   setPaused: (p: boolean) => void;
   buy: (id: import("@/game/types").WeaponId) => boolean;
   buyArmor: () => boolean;
+  dropBomb: () => void;
+  dropGun: () => void;
   input: {
     setMoveStick: (x: number, y: number) => void;
     setLook: (x: number, y: number) => void;
     setAction: (n: TouchAction, v: boolean) => void;
     setSlot: (n: number) => void;
+    setFire: (v: boolean) => void;
   };
 };
+
+const RADIO_IDS: RadioCallId[] = ["spotted", "backup", "follow", "hold", "goA", "goB"];
+
+function radioLabel(t: (typeof STR)["en"], id: RadioCallId): string {
+  switch (id) {
+    case "spotted":
+      return t.radioSpot;
+    case "backup":
+      return t.radioBackup;
+    case "follow":
+      return t.radioFollow;
+    case "hold":
+      return t.radioHold;
+    case "goA":
+      return t.radioGoA;
+    case "goB":
+      return t.radioGoB;
+  }
+}
+
+function radioDigit(e: KeyboardEvent): number | null {
+  const fromCode = /^(?:Digit|Numpad|Key)([1-6])$/.exec(e.code);
+  if (fromCode) return Number(fromCode[1]);
+  if (e.key.length === 1 && e.key >= "1" && e.key <= "6") return Number(e.key);
+  return null;
+}
 
 type Props = {
   cfg: MatchConfig;
@@ -59,6 +90,9 @@ const emptyHud = (): HudSnapshot => ({
   roundsTR: 0,
   hitmarker: 0,
   headshot: false,
+  dmg: 0,
+  dmgHead: false,
+  dmgT: 0,
   hurt: 0,
   flash: 0,
   killMsg: "",
@@ -71,6 +105,7 @@ const emptyHud = (): HudSnapshot => ({
   siteHint: "",
   allies: [],
   enemies: [],
+  tags: [],
   lookingName: "",
   lookingTeam: null,
   lookingHp: 0,
@@ -85,14 +120,24 @@ const emptyHud = (): HudSnapshot => ({
   bombZ: 0,
   bombVisible: false,
   money: 800,
+  cash: 0,
+  cashT: 0,
   bloom: 0,
+  speed: 0,
+  spread: 0,
+  arc: false,
+  arcX: 0,
+  arcZ: 0,
   hurtDir: 0,
   sites: [],
+  blocks: [],
   bannerKind: "",
   bannerTeam: null,
   kits: [],
   reloadFrac: 0,
   carrying: false,
+  walking: false,
+  bolting: false,
   roundsToWin: 5,
   bombSite: "",
   smoke: 0,
@@ -104,6 +149,8 @@ const emptyHud = (): HudSnapshot => ({
   primary: "car15",
   pistol: "d50",
   nade: "he",
+  primaryOut: false,
+  pistolOut: false,
 });
 
 export function GameScreen({ cfg, onEvent, onQuit }: Props) {
@@ -112,6 +159,12 @@ export function GameScreen({ cfg, onEvent, onQuit }: Props) {
   const [hud, setHud] = useState<HudSnapshot>(emptyHud());
   const [started, setStarted] = useState(!!cfg.skipTap);
   const [touchUI, setTouchUI] = useState(false);
+  const [radioOpen, setRadioOpen] = useState(false);
+  const [radioCaption, setRadioCaption] = useState("");
+  const radioOpenRef = useRef(false);
+  const canRadioRef = useRef(false);
+  const pickRadioRef = useRef<(n: number) => void>(() => {});
+  const capTimer = useRef(0);
   const scoreboard = usePB((s) => s.scoreboard);
   const setScoreboard = usePB((s) => s.setScoreboard);
   const killfeed = usePB((s) => s.killfeed);
@@ -142,11 +195,14 @@ export function GameScreen({ cfg, onEvent, onQuit }: Props) {
         setSlot: eng.input.setSlot,
         buy: eng.buy,
         buyArmor: eng.buyArmor,
+        dropBomb: eng.dropBomb,
+        dropGun: eng.dropGun,
         getHud: () => eng?.getHud() ?? emptyHud(),
         getSpray: () => eng?.getSpray() ?? { shotI: 0, recoilP: 0, recoilY: 0, weapon: "car15" },
       };
       if (cfg.skipTap) {
         if (isCoarsePointer()) setTouchUI(true);
+        else eng.useMouse(true);
         setStarted(true);
         eng.requestLock();
       }
@@ -184,8 +240,76 @@ export function GameScreen({ cfg, onEvent, onQuit }: Props) {
     };
   }, [setScoreboard]);
 
+  useEffect(() => {
+    const held = new Set<string>();
+    const down = (e: KeyboardEvent) => {
+      if (held.has(e.code)) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      const can = canRadioRef.current;
+      const open = radioOpenRef.current;
+      if (!can) return;
+      if (!open) {
+        if (e.code === "KeyZ" && !e.repeat) {
+          e.preventDefault();
+          e.stopPropagation();
+          held.add(e.code);
+          setRadioOpen(true);
+        }
+        return;
+      }
+      const n = radioDigit(e);
+      if (n) {
+        e.preventDefault();
+        e.stopPropagation();
+        held.add(e.code);
+        if (!e.repeat) pickRadioRef.current(n);
+        return;
+      }
+      if (e.code === "Escape" || e.code === "KeyZ") {
+        e.preventDefault();
+        e.stopPropagation();
+        held.add(e.code);
+        if (!e.repeat) setRadioOpen(false);
+      }
+    };
+    const up = (e: KeyboardEvent) => {
+      held.delete(e.code);
+    };
+    window.addEventListener("keydown", down, true);
+    window.addEventListener("keyup", up, true);
+    return () => {
+      window.removeEventListener("keydown", down, true);
+      window.removeEventListener("keyup", up, true);
+      window.clearTimeout(capTimer.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => {
+      if (e.repeat) return;
+      const el = e.target as HTMLElement | null;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+      if (e.code !== "KeyW" && e.code !== "KeyA" && e.code !== "KeyS" && e.code !== "KeyD") return;
+      setTouchUI(false);
+      setStarted(true);
+      engRef.current?.useMouse(true);
+      engRef.current?.requestLock();
+    };
+    window.addEventListener("keydown", down);
+    return () => window.removeEventListener("keydown", down);
+  }, []);
+
   function begin(pointerType?: string) {
-    if (pointerType === "touch" || pointerType === "pen" || isCoarsePointer()) setTouchUI(true);
+    if (pointerType === "touch" || pointerType === "pen") {
+      setTouchUI(true);
+      engRef.current?.useMouse(false);
+    } else if (pointerType === "mouse" || !isCoarsePointer()) {
+      setTouchUI(false);
+      engRef.current?.useMouse(true);
+    }
     setStarted(true);
     engRef.current?.requestLock();
   }
@@ -193,7 +317,23 @@ export function GameScreen({ cfg, onEvent, onQuit }: Props) {
   const rows = engRef.current?.getScoreRows() ?? [];
   const mm = MAP_META[cfg.map];
   const playing = started || hud.locked;
-  const showPad = playing && (touchUI || !hud.mouseLocked);
+  const showPad = playing && touchUI;
+  const canRadio = playing && hud.alive && !hud.paused;
+  radioOpenRef.current = radioOpen;
+  canRadioRef.current = canRadio;
+  pickRadioRef.current = (n: number) => {
+    const id = RADIO_IDS[n - 1];
+    if (!id) return;
+    setRadioOpen(false);
+    setRadioCaption(radioLabel(t, id));
+    window.clearTimeout(capTimer.current);
+    capTimer.current = window.setTimeout(() => setRadioCaption(""), 1600);
+    playRadioCall(id);
+  };
+
+  useEffect(() => {
+    if (!canRadio) setRadioOpen(false);
+  }, [canRadio]);
 
   return (
     <div
@@ -203,7 +343,11 @@ export function GameScreen({ cfg, onEvent, onQuit }: Props) {
         ref={canvasRef}
         className="absolute inset-0 h-full w-full touch-none"
         onClick={() => {
-          if (!showPad) engRef.current?.requestLock();
+          if (!touchUI) {
+            setTouchUI(false);
+            engRef.current?.useMouse(true);
+            engRef.current?.requestLock();
+          }
         }}
       />
       <div className="pointer-events-none absolute inset-0">
@@ -236,6 +380,20 @@ export function GameScreen({ cfg, onEvent, onQuit }: Props) {
           bloom={hud.bloom}
           hide={hud.ads && (hud.weapon === "sr98" || hud.kits.includes("rd"))}
         />
+        {hud.dmgT > 0.04 ? (
+          <div
+            className={`absolute left-1/2 font-mono text-lg tabular-nums ${hud.dmgHead ? "text-tr" : "text-fg"} ${
+              showPad ? "text-base" : "text-xl"
+            }`}
+            style={{
+              top: `${44 - (1 - Math.min(1, hud.dmgT)) * 7}%`,
+              transform: "translate(-50%, 0)",
+              opacity: Math.min(1, hud.dmgT),
+            }}
+          >
+            {Math.round(hud.dmg)}
+          </div>
+        ) : null}
         {hud.ads && hud.kits.includes("rd") && hud.weapon !== "sr98" ? <RedDot /> : null}
         <Radar hud={hud} compact={showPad} />
         <HurtFlash dir={hud.hurtDir} amt={hud.hurt} />
@@ -248,6 +406,7 @@ export function GameScreen({ cfg, onEvent, onQuit }: Props) {
             }`}
           >
             <div>{t.youBomb}</div>
+            <div className="mt-0.5 text-[10px] tracking-[0.22em] text-muted">{t.dropC4}</div>
             {hud.bombSite ? (
               <div className="mt-0.5 text-accent">
                 {t.goSite} {hud.bombSite}
@@ -278,10 +437,27 @@ export function GameScreen({ cfg, onEvent, onQuit }: Props) {
               {hud.killMsg}
             </div>
             {hud.headshot && !hud.killBy ? (
-              <div className="mt-1 font-display text-[10px] tracking-[0.4em] text-tr md:text-sm">{t.headshot}</div>
+              <div className="relative mt-2 flex items-center justify-center">
+                <span className="absolute h-8 w-56 -skew-x-12 rounded-full bg-[#c4121a]/85 blur-[1px]" />
+                <span className="absolute h-3 w-40 -skew-x-12 bg-[#ff2a2a]/80" />
+                <span className="relative font-display text-3xl italic tracking-[0.18em] text-white drop-shadow-[0_2px_0_#4a0008] md:text-5xl">
+                  HEAD SHOT
+                </span>
+              </div>
             ) : null}
           </div>
         ) : null}
+        {hud.tags.map((tag) => (
+          <div
+            key={tag.name}
+            className={`absolute -translate-x-1/2 font-display text-[10px] tracking-[0.18em] ${
+              hud.team === "CT" ? "text-ct" : "text-tr"
+            }`}
+            style={{ left: `${tag.x}%`, top: `${tag.y}%` }}
+          >
+            {tag.name}
+          </div>
+        ))}
         {hud.lookingName ? (
           <div className="absolute left-1/2 top-[44%] -translate-x-1/2 text-center">
             <div
@@ -312,6 +488,18 @@ export function GameScreen({ cfg, onEvent, onQuit }: Props) {
         {!hud.alive && (
           <DeathCam hud={hud} t={t} tdm={cfg.mode === "tdm"} compact={showPad} />
         )}
+        {radioCaption ? (
+          <div className="absolute bottom-[22%] left-[max(0.75rem,env(safe-area-inset-left))] z-[16] max-w-[min(420px,68vw)] md:bottom-32">
+            <div className="font-display text-[9px] tracking-[0.42em] text-muted">{t.radio}</div>
+            <div
+              className={`font-display text-sm tracking-[0.14em] drop-shadow-[0_2px_8px_rgba(0,0,0,0.85)] md:text-xl ${
+                hud.team === "CT" ? "text-ct" : "text-tr"
+              }`}
+            >
+              {cfg.nickname.toUpperCase()}: {radioCaption}
+            </div>
+          </div>
+        ) : null}
       </div>
 
       {!cfg.skipTap && !playing && hud.alive && !hud.paused && (
@@ -393,8 +581,26 @@ export function GameScreen({ cfg, onEvent, onQuit }: Props) {
           t={t}
           onPause={() => engRef.current?.setPaused(true)}
           onScore={(v) => setScoreboard(v)}
+          onRadio={() => setRadioOpen((v) => !v)}
+          onDesktop={() => {
+            setTouchUI(false);
+            setStarted(true);
+            engRef.current?.useMouse(true);
+            engRef.current?.requestLock();
+            engRef.current?.input.setFire(true);
+          }}
         />
       )}
+      {radioOpen && canRadio ? (
+        <RadioPanel
+          t={t}
+          onPick={(id) => {
+            const n = RADIO_IDS.indexOf(id);
+            if (n >= 0) pickRadioRef.current(n + 1);
+          }}
+          onClose={() => setRadioOpen(false)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -620,6 +826,11 @@ function FreezeBuy({
         <span className="font-display text-[10px] tracking-[0.28em] text-muted">{t.freezeBuy}</span>
         <span className={`font-mono text-sm tabular-nums ${deny ? "text-tr" : "text-accent"}`}>
           {t.gp} {hud.money}
+          {hud.cashT > 0.05 ? (
+            <span className="ml-1 text-hp" style={{ opacity: Math.min(1, hud.cashT) }}>
+              +{hud.cash}
+            </span>
+          ) : null}
         </span>
         <button
           type="button"
@@ -698,26 +909,41 @@ function Crosshair({
   const g = (ads ? (compact ? 4 : 3) : (compact ? 12 : 8) * size) + bloom * 48;
   const len = ads ? (compact ? 9 : 6) : compact ? 14 : 10;
   const t = compact ? 3 : 2;
-  const c = hit > 0 ? (head ? "#ff4a4a" : "#f4f1ea") : "#f4f1ea";
+  const arm = "#f4f1ea";
+  const xColor = head ? "#ff4a4a" : "#f4f1ea";
+  const xScale = 1 + hit * 1.6;
   const stroke = "0 0 0 1px #0c0d10, 0 0 5px rgba(12,13,16,0.85)";
+  const xBar = (deg: number) => ({
+    left: 0,
+    top: 0,
+    width: 12,
+    height: 2,
+    background: xColor,
+    opacity: hit,
+    transform: `translate(-50%, -50%) rotate(${deg}deg) scale(${xScale})`,
+    transformOrigin: "center center",
+    boxShadow: stroke,
+  });
   return (
     <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
       <i
         className="absolute block"
-        style={{ left: 1 - t, top: -g - len, width: t, height: len, background: c, boxShadow: stroke }}
+        style={{ left: 1 - t, top: -g - len, width: t, height: len, background: arm, boxShadow: stroke }}
       />
       <i
         className="absolute block"
-        style={{ left: 1 - t, top: g, width: t, height: len, background: c, boxShadow: stroke }}
+        style={{ left: 1 - t, top: g, width: t, height: len, background: arm, boxShadow: stroke }}
       />
       <i
         className="absolute block"
-        style={{ left: -g - len, top: 1 - t, width: len, height: t, background: c, boxShadow: stroke }}
+        style={{ left: -g - len, top: 1 - t, width: len, height: t, background: arm, boxShadow: stroke }}
       />
       <i
         className="absolute block"
-        style={{ left: g, top: 1 - t, width: len, height: t, background: c, boxShadow: stroke }}
+        style={{ left: g, top: 1 - t, width: len, height: t, background: arm, boxShadow: stroke }}
       />
+      <i className="absolute block" style={xBar(45)} />
+      <i className="absolute block" style={xBar(-45)} />
       <i
         className="absolute block rounded-full"
         style={{
@@ -725,7 +951,7 @@ function Crosshair({
           top: -2,
           width: 4,
           height: 4,
-          background: hit > 0 ? c : "#ff6a00",
+          background: hit > 0 ? xColor : "#ff6a00",
           boxShadow: stroke,
         }}
       />
@@ -745,10 +971,22 @@ function Radar({ hud, compact }: { hud: HudSnapshot; compact?: boolean }) {
       className={`absolute overflow-hidden border border-line bg-bg/70 p-1 ${compact ? "left-2 top-2" : "left-3 top-3"}`}
     >
       <svg width={size} height={size} viewBox={`${-size / 2} ${-size / 2} ${size} ${size}`}>
-        <circle r={size / 2 - 2} fill="#0c0d10cc" stroke="#2a2d36" />
-        <circle r={size / 4} fill="none" stroke="#2a2d36" />
-        <line x1={0} y1={-size / 2} x2={0} y2={size / 2} stroke="#2a2d36" />
-        <line x1={-size / 2} y1={0} x2={size / 2} y2={0} stroke="#2a2d36" />
+        <circle r={size / 2 - 2} fill="#10141acc" stroke="#2a2d36" />
+        {hud.blocks.map((b, i) => {
+          const c = Math.cos(-hud.yaw);
+          const s = Math.sin(-hud.yaw);
+          const corners = [
+            [b.x - b.w / 2, b.z - b.d / 2],
+            [b.x + b.w / 2, b.z - b.d / 2],
+            [b.x + b.w / 2, b.z + b.d / 2],
+            [b.x - b.w / 2, b.z + b.d / 2],
+          ].map(([x, z]) => {
+            const dx = x! - hud.x;
+            const dz = z! - hud.z;
+            return `${(dx * c - dz * s) * scale},${(dx * s + dz * c) * scale}`;
+          });
+          return <polygon key={i} points={corners.join(" ")} fill="#243044" stroke="#4d627c" strokeWidth={0.6} />;
+        })}
         {dots.map((d, i) => {
           const dx = d.x - hud.x;
           const dz = d.z - hud.z;
@@ -801,58 +1039,37 @@ function TopBar({ hud, mapName, compact }: { hud: HudSnapshot; mapName: string; 
   const s = Math.floor(hud.timer % 60)
     .toString()
     .padStart(2, "0");
-  const pips = Array.from({ length: hud.roundsToWin || 5 });
+  const plate = (n: number) => Math.max(0, Math.min(999, n)).toString().padStart(3, "0");
   const demo = hud.mode === "demolition";
   return (
-    <div className={`absolute left-1/2 flex -translate-x-1/2 flex-col items-center ${compact ? "top-1.5" : "top-3"}`}>
-      <div
-        className={`flex items-center border border-border bg-bg/70 ${compact ? "gap-2 px-2 py-0.5" : "gap-4 px-4 py-1"}`}
-      >
-        <span className={`font-display text-ct tabular-nums ${compact ? "text-lg" : "text-2xl"}`}>{hud.scoreCT}</span>
-        {hud.bombPlanted ? (
-          <span className="font-display text-[8px] tracking-widest text-warn">BOMB</span>
-        ) : null}
-        <span
-          className={`font-mono tracking-widest tabular-nums ${hud.bombPlanted ? "text-warn" : "text-fg"} ${compact ? "text-sm" : "text-xl"}`}
-        >
-          {m}:{s}
+    <div className={`absolute left-1/2 z-[12] flex -translate-x-1/2 flex-col items-center ${compact ? "top-1" : "top-2"}`}>
+      <div className="flex items-stretch overflow-hidden border border-white/25 shadow-[0_2px_8px_rgba(0,0,0,0.65)]">
+        <span className={`bg-[#9a1c22] font-display tabular-nums text-white ${compact ? "px-1.5 text-base" : "px-2.5 text-2xl"}`}>
+          {plate(hud.scoreCT)}
         </span>
-        {hud.carrying ? (
-          <span className="border border-warn px-1 font-display text-[9px] tracking-widest text-warn">C4</span>
-        ) : null}
-        <span className={`font-display text-tr tabular-nums ${compact ? "text-lg" : "text-2xl"}`}>{hud.scoreTR}</span>
+        <span
+          className={`flex items-center bg-black/90 font-display tracking-[0.14em] text-white ${
+            compact ? "px-1.5 text-[10px]" : "px-2 text-sm"
+          }`}
+        >
+          {hud.round} R
+        </span>
+        <span className={`bg-[#9a1c22] font-display tabular-nums text-white ${compact ? "px-1.5 text-base" : "px-2.5 text-2xl"}`}>
+          {plate(hud.scoreTR)}
+        </span>
       </div>
-      {hud.mode !== "tdm" ? (
-        <div className="mt-1 flex items-center gap-3">
-          <div className="flex gap-0.5">
-            {pips.map((_, i) => (
-              <i
-                key={`ct${i}`}
-                className={`block h-2 w-2 border ${i < hud.roundsCT ? "border-ct bg-ct" : "border-line bg-transparent"}`}
-              />
-            ))}
-          </div>
-          <span className="font-display text-[9px] tracking-[0.2em] text-muted">R{hud.round}</span>
-          <div className="flex gap-0.5">
-            {pips.map((_, i) => (
-              <i
-                key={`tr${i}`}
-                className={`block h-2 w-2 border ${i < hud.roundsTR ? "border-tr bg-tr" : "border-line bg-transparent"}`}
-              />
-            ))}
-          </div>
-        </div>
-      ) : null}
-      {!compact || demo ? (
-        <div className="mt-1 font-display text-[10px] tracking-[0.28em] text-muted">
-          {!compact ? (
-            <>
-              {mapName} · {hud.mode.toUpperCase()}
-              {demo ? " · " : ""}
-            </>
-          ) : null}
-          {demo ? `FT${hud.roundsToWin || 5}` : ""}
-          {demo && hud.bombSite ? ` · SITE ${hud.bombSite}` : ""}
+      <div
+        className={`mt-0.5 bg-black/75 font-mono tabular-nums text-white ${
+          hud.bombPlanted ? "text-warn" : ""
+        } ${compact ? "px-1.5 text-[10px]" : "px-2 text-sm"}`}
+      >
+        {m.toString().padStart(2, "0")}:{s}
+      </div>
+      {!compact ? (
+        <div className="mt-0.5 font-display text-[9px] tracking-[0.22em] text-white/70">
+          {mapName}
+          {demo && hud.bombSite ? ` · ${hud.bombSite}` : ""}
+          {hud.carrying ? " · C4" : ""}
         </div>
       ) : null}
     </div>
@@ -860,25 +1077,27 @@ function TopBar({ hud, mapName, compact }: { hud: HudSnapshot; mapName: string; 
 }
 
 function SlotStrip({ hud }: { hud: HudSnapshot }) {
-  const items: Array<{ n: number; id: WeaponId; dry?: boolean }> = [
-    { n: 1, id: hud.primary },
-    { n: 2, id: hud.pistol },
+  const items: Array<{ n: number; id: WeaponId; dry?: boolean; out?: boolean }> = [
+    { n: 1, id: hud.primary, out: hud.primaryOut },
+    { n: 2, id: hud.pistol, out: hud.pistolOut },
     { n: 3, id: "knife" },
     { n: 4, id: hud.nade, dry: hud.nades <= 0 },
   ];
   return (
     <div className="mb-1 flex flex-col items-end gap-0.5">
       {items.map((it) => {
-        const on = hud.weapon === it.id;
+        const on = hud.weapon === it.id && !it.out;
         return (
           <div
             key={it.n}
             className={`flex items-center gap-1.5 font-display tracking-widest ${
-              on ? "text-accent" : it.dry ? "text-faint" : "text-muted"
+              on ? "text-accent" : it.dry || it.out ? "text-faint" : "text-muted"
             }`}
           >
             <span className="text-[9px] tabular-nums">{it.n}</span>
-            <span className={`text-[10px] ${on ? "text-fg" : ""}`}>{WEAPONS[it.id].name}</span>
+            <span className={`text-[10px] ${on ? "text-fg" : ""} ${it.out ? "line-through" : ""}`}>
+              {it.out ? "—" : WEAPONS[it.id].name}
+            </span>
           </div>
         );
       })}
@@ -917,6 +1136,7 @@ function TouchVitals({ hud }: { hud: HudSnapshot }) {
         </div>
         <div className="mt-0.5 font-mono text-[9px] tabular-nums text-accent">
           {hud.money} GP
+          {hud.cashT > 0.05 ? <span className="text-hp"> +{hud.cash}</span> : null}
         </div>
       </div>
       <div className="absolute right-[3.4rem] top-[3.35rem] text-right">
@@ -956,6 +1176,9 @@ function TouchVitals({ hud }: { hud: HudSnapshot }) {
 
 function BottomHud({ hud }: { hud: HudSnapshot }) {
   const w = WEAPONS[hud.weapon];
+  const locale = usePB((s) => s.settings.locale);
+  const walkLabel = (STR[locale] ?? STR.en).walk;
+  const boltLabel = (STR[locale] ?? STR.en).bolt;
   return (
     <div className="absolute inset-x-0 bottom-0 flex items-end justify-between p-3 md:p-5">
       <div className="w-56">
@@ -969,11 +1192,20 @@ function BottomHud({ hud }: { hud: HudSnapshot }) {
         <div className="mt-1 h-1.5 overflow-hidden bg-elevated">
           <div className="h-full bg-armor" style={{ width: `${hud.armor}%` }} />
         </div>
-        <div className="mt-1 font-mono text-xs tabular-nums text-accent">{hud.money} GP</div>
+        <div className="mt-1 font-mono text-xs tabular-nums text-accent">
+          {hud.money} GP
+          {hud.cashT > 0.05 ? <span className="text-hp"> +{hud.cash}</span> : null}
+        </div>
       </div>
       <div className="text-right">
         <SlotStrip hud={hud} />
         <div className="font-display text-xs tracking-[0.3em] text-muted">{hud.weaponName}</div>
+        {hud.walking ? (
+          <div className="font-display text-[10px] tracking-[0.32em] text-accent">{walkLabel}</div>
+        ) : null}
+        {hud.bolting ? (
+          <div className="font-display text-[10px] tracking-[0.32em] text-warn">{boltLabel}</div>
+        ) : null}
         <KitPips kits={hud.kits} />
         {w.slot === "melee" || w.slot === "nade" ? (
           <div className="font-mono text-3xl text-fg">{w.slot === "nade" ? hud.nades : "—"}</div>
@@ -1145,6 +1377,7 @@ function Scoreboard({
     ping: number;
     alive?: boolean;
     rkills?: number;
+    bomb?: boolean;
   }>;
   you: string;
   t: (typeof STR)["en"];
@@ -1196,7 +1429,7 @@ function TeamTable({
 }: {
   title: string;
   color: string;
-  rows: Array<{ name: string; kills: number; deaths: number; assists: number; ping: number; alive?: boolean }>;
+  rows: Array<{ name: string; kills: number; deaths: number; assists: number; ping: number; alive?: boolean; bomb?: boolean }>;
   you: string;
   t: (typeof STR)["en"];
   mvp: string;
@@ -1224,6 +1457,7 @@ function TeamTable({
           >
             <span className="col-span-2 flex items-center gap-1.5 truncate">
               {isMvp ? <span className="font-display text-[9px] tracking-widest text-accent">MVP</span> : null}
+              {r.bomb ? <span className="font-display text-[9px] tracking-widest text-warn">C4</span> : null}
               <span className={dead ? "line-through opacity-70" : ""}>{r.name}</span>
             </span>
             <span>{r.kills}</span>
@@ -1242,13 +1476,18 @@ function MobilePad({
   t,
   onPause,
   onScore,
+  onRadio,
+  onDesktop,
 }: {
   hud: HudSnapshot;
   t: (typeof STR)["en"];
   onPause: () => void;
   onScore: (v: boolean) => void;
+  onRadio: () => void;
+  onDesktop: () => void;
 }) {
   const adsOn = useRef(false);
+  const walkOn = useRef(false);
   const lookAt = useRef<{ id: number; x: number; y: number } | null>(null);
 
   function trackLook(e: ReactPointerEvent, start: boolean) {
@@ -1286,7 +1525,7 @@ function MobilePad({
     };
   }
 
-  function bindToggle(name: "ads" | "crouch", flag: { current: boolean }) {
+  function bindToggle(name: "ads" | "crouch" | "walk", flag: { current: boolean }) {
     return {
       onPointerDown: (e: ReactPointerEvent) => {
         e.preventDefault();
@@ -1310,7 +1549,7 @@ function MobilePad({
 
   return (
     <div className="absolute inset-0 z-10">
-      <LookZone />
+      <LookZone onDesktop={onDesktop} />
       <MoveStick />
 
       <div
@@ -1346,8 +1585,8 @@ function MobilePad({
             { n: 3, id: "knife" as WeaponId },
             { n: 4, id: hud.nade },
           ].map((it) => {
-            const on = hud.weapon === it.id;
-            const dry = it.n === 4 && hud.nades <= 0;
+            const on = hud.weapon === it.id && !(it.n === 1 && hud.primaryOut) && !(it.n === 2 && hud.pistolOut);
+            const dry = (it.n === 4 && hud.nades <= 0) || (it.n === 1 && hud.primaryOut) || (it.n === 2 && hud.pistolOut);
             return (
               <button
                 key={it.n}
@@ -1368,11 +1607,39 @@ function MobilePad({
         </div>
         <div className="flex items-end gap-2">
           <div className="mb-3 flex flex-col gap-2">
+            <button
+              type="button"
+              className="h-12 min-h-11 min-w-12 border border-line bg-bg/65 px-2 font-display text-[10px] tracking-widest text-fg touch-none"
+              onPointerDown={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onRadio();
+              }}
+            >
+              {t.radio}
+            </button>
+            {hud.carrying || WEAPONS[hud.weapon].slot === "primary" || WEAPONS[hud.weapon].slot === "pistol" ? (
+              <button
+                type="button"
+                className="h-12 min-h-11 min-w-12 border border-warn bg-bg/65 px-2 font-display text-[10px] tracking-widest text-warn touch-none"
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (hud.carrying) window.__pbEngine?.dropBomb?.();
+                  else window.__pbEngine?.dropGun?.();
+                }}
+              >
+                DROP
+              </button>
+            ) : null}
             <PadBtn {...bindHold("reload")}>{t.touchRel}</PadBtn>
             <PadBtn {...bindToggle("ads", adsOn)} active={hud.ads}>
               {t.touchAds}
             </PadBtn>
             {needUse ? <PadBtn {...bindHold("use")}>USE</PadBtn> : <PadBtn {...bindHold("sprint")}>SPR</PadBtn>}
+            <PadBtn {...bindToggle("walk", walkOn)} active={hud.walking}>
+              {t.walk}
+            </PadBtn>
           </div>
           <div className="flex flex-col items-center gap-2">
             <PadBtn {...bindHold("jump")}>{t.touchJump}</PadBtn>
@@ -1403,13 +1670,18 @@ function markPointer(type: string) {
   if (type === "touch" || type === "pen") lastTouchAt = performance.now();
 }
 
-function LookZone() {
+function LookZone({ onDesktop }: { onDesktop: () => void }) {
   const last = useRef<{ id: number; x: number; y: number } | null>(null);
   return (
     <div
       className="pointer-events-auto absolute inset-0 touch-none"
       data-stick="look"
       onPointerDown={(e) => {
+        if (e.pointerType === "mouse" && e.button === 0 && !isGhostMouse(e.pointerType)) {
+          e.preventDefault();
+          onDesktop();
+          return;
+        }
         if (e.pointerType === "mouse" && e.button !== 0) return;
         if (isGhostMouse(e.pointerType)) return;
         markPointer(e.pointerType);
@@ -1547,6 +1819,59 @@ function MoveStick() {
           opacity: 0.5,
         }}
       />
+    </div>
+  );
+}
+
+function RadioPanel({
+  t,
+  onPick,
+  onClose,
+}: {
+  t: (typeof STR)["en"];
+  onPick: (id: RadioCallId) => void;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      className="pointer-events-auto absolute z-30 border border-border bg-bg/80 p-2 shadow-[0_8px_28px_rgba(0,0,0,0.45)]"
+      style={{
+        left: "max(0.75rem, env(safe-area-inset-left))",
+        top: "max(6.5rem, 22%)",
+        width: "min(240px, 40vw)",
+      }}
+    >
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <span className="font-display text-[10px] tracking-[0.42em] text-accent">{t.radio}</span>
+        <button
+          type="button"
+          className="h-11 min-h-11 px-2 font-display text-[10px] tracking-widest text-muted"
+          onPointerDown={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onClose();
+          }}
+        >
+          ESC
+        </button>
+      </div>
+      <div className="flex max-h-[min(420px,62vh)] flex-col gap-1 overflow-y-auto overscroll-contain">
+        {RADIO_IDS.map((id, i) => (
+          <button
+            key={id}
+            type="button"
+            className="flex h-11 min-h-11 items-center gap-2 border border-line bg-surface/80 px-2 text-left font-display tracking-widest text-fg"
+            onPointerDown={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onPick(id);
+            }}
+          >
+            <span className="w-4 text-accent">{i + 1}</span>
+            <span className="text-[11px] leading-none md:text-xs">{radioLabel(t, id)}</span>
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

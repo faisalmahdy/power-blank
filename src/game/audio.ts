@@ -5,7 +5,7 @@ export type AudioHandle = {
   setGains: (master: number, sfx: number, music: number) => void;
   gun: (kind: string, dist?: number, pan?: number) => void;
   hit: (head: boolean) => void;
-  foot: (sprint: boolean, dist?: number, id?: string, crouch?: boolean, pan?: number) => void;
+  foot: (sprint: boolean, dist?: number, id?: string, crouch?: boolean, pan?: number, walk?: boolean) => void;
   land: () => void;
   reload: (kind?: string) => void;
   cycle: (kind?: string) => void;
@@ -18,6 +18,7 @@ export type AudioHandle = {
   tick: (n: number) => void;
   slam: () => void;
   radio: (kind: "go" | "plant" | "defuse" | "ten" | "down" | "win") => void;
+  radioCall: (id: RadioCallId) => void;
   whoosh: () => void;
   startDrones: () => void;
   stopDrones: () => void;
@@ -37,6 +38,17 @@ function jitter(amt = 0.08): number {
 }
 
 let sharedCtx: AudioContext | null = null;
+let liveAudio: AudioHandle | null = null;
+
+export type RadioCallId = "spotted" | "backup" | "follow" | "hold" | "goA" | "goB";
+
+/** Player radio-command burst. Uses the match audio instance (squelch + vox). */
+export function playRadioCall(id: RadioCallId) {
+  const a = liveAudio;
+  if (!a) return;
+  a.unlock();
+  a.radioCall(id);
+}
 
 /** Call from a real click (START MATCH) so countdown VO can play on mount. */
 export function bootAudio(): AudioContext | null {
@@ -373,7 +385,8 @@ export function createAudio(): AudioHandle {
     playNoise(0.05, 0.07, 0.001, 0.045, 2800, 1.1, 1.2, t + acc);
   }
 
-  return {
+  const self: { current: AudioHandle | null } = { current: null };
+  const api: AudioHandle = {
     unlock,
     setGains: (master, sfx, music) => {
       ensure();
@@ -403,11 +416,11 @@ export function createAudio(): AudioHandle {
         tone(420, "triangle", 0.06, 0.001, 0.04);
       }
     },
-    foot: (sprint, dist = 0, id = "self", crouch = false, pan = 0) => {
+    foot: (sprint, dist = 0, id = "self", crouch = false, pan = 0, walk = false) => {
       ensure();
       if (!ctx || !bus) return;
       const now = ctx.currentTime;
-      const gap = crouch ? 0.52 : sprint ? 0.255 : 0.4;
+      const gap = crouch ? 0.52 : walk ? 0.48 : sprint ? 0.255 : 0.4;
       if (now < (footNext.get(id) ?? 0)) return;
       const att = dist <= 0.8 ? 1 : Math.max(0, 1 - (dist - 0.8) / 20);
       if (att < 0.05) return;
@@ -415,8 +428,8 @@ export function createAudio(): AudioHandle {
       const side = (footSide.get(id) ?? 0) ^ 1;
       footSide.set(id, side);
       const self = dist <= 0.8 ? 0.52 : 1;
-      const sneak = crouch ? 0.32 : 1;
-      const peak = (sprint ? 0.17 : 0.11) * att * self * sneak;
+      const sneak = crouch ? 0.32 : walk ? 0.38 : 1;
+      const peak = (sprint ? 0.17 : walk ? 0.055 : 0.11) * att * self * sneak;
       const heel = (sprint ? 125 : 175) * (side ? 0.94 : 1.05);
       nextPan = pan;
       playNoise(0.048, peak, 0.001, 0.055, heel, 0.82, 0.58 + Math.random() * 0.1, now, "lowpass");
@@ -544,6 +557,47 @@ export function createAudio(): AudioHandle {
         vox(230, 0.14, 0.2, t + 0.38);
       }
     },
+    radioCall: (id) => {
+      ensure();
+      if (!ctx) return;
+      const book: Record<RadioCallId, Array<[number, number, number]>> = {
+        spotted: [
+          [248, 0.2, 0.065],
+          [318, 0.18, 0.055],
+          [196, 0.16, 0.07],
+          [372, 0.15, 0.09],
+        ],
+        backup: [
+          [112, 0.22, 0.15],
+          [96, 0.18, 0.13],
+          [146, 0.16, 0.17],
+        ],
+        follow: [
+          [168, 0.16, 0.075],
+          [214, 0.16, 0.075],
+          [268, 0.15, 0.08],
+          [336, 0.14, 0.11],
+        ],
+        hold: [
+          [160, 0.2, 0.2],
+          [148, 0.15, 0.22],
+        ],
+        goA: [
+          [226, 0.2, 0.055],
+          [340, 0.18, 0.07],
+          [418, 0.16, 0.11],
+        ],
+        goB: [
+          [304, 0.18, 0.07],
+          [246, 0.16, 0.07],
+          [198, 0.15, 0.08],
+          [142, 0.14, 0.13],
+        ],
+      };
+      const notes = book[id];
+      if (!notes) return;
+      phrase(notes);
+    },
     whoosh: () => {
       ensure();
       playNoise(0.12, 0.16, 0.004, 0.12, 600, 0.7, 1.1);
@@ -576,6 +630,7 @@ export function createAudio(): AudioHandle {
       drone.g.gain.setTargetAtTime(0, ctx.currentTime, 0.2);
     },
     dispose: () => {
+      if (liveAudio === self.current) liveAudio = null;
       try {
         drone?.osc.stop();
       } catch {
@@ -589,4 +644,7 @@ export function createAudio(): AudioHandle {
       noiseBuf = null;
     },
   };
+  self.current = api;
+  liveAudio = api;
+  return api;
 }

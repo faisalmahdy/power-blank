@@ -403,6 +403,7 @@ export function spreadOf(
   ads: boolean,
   crouch = false,
   airborne = false,
+  walk = false,
 ): number {
   if (w.pellets > 1) {
     let s = ads ? w.adsSpread : moving ? w.moveSpread : w.spread;
@@ -412,6 +413,7 @@ export function spreadOf(
   }
   let s: number;
   if (ads) s = w.kits.includes("rd") ? w.adsSpread * 0.5 : w.adsSpread;
+  else if (walk) s = (w.kits.includes("lsr") ? w.spread * 0.62 : w.spread) * 1.15;
   else if (moving) s = w.kits.includes("lsr") ? w.moveSpread * 0.62 : w.moveSpread;
   else s = w.kits.includes("lsr") ? w.spread * 0.62 : w.spread;
   if (crouch) s *= 0.68;

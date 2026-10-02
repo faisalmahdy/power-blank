@@ -58,14 +58,14 @@ function siteRoom(name: string, x: number, z: number, minX: number, maxX: number
 }
 
 const TEX: Partial<Record<MatId, string>> = {
-  concrete: "/game/concrete.jpg",
-  metal: "/game/metal.jpg",
-  wood: "/game/wood.jpg",
-  brick: "/game/brick.jpg",
-  container: "/game/container.jpg",
-  sand: "/game/sand.jpg",
-  plaster: "/game/plaster.jpg",
-  rust: "/game/rust.jpg",
+  concrete: "/game/concrete-tile.jpg",
+  metal: "/game/metal-tile.jpg",
+  wood: "/game/wood-tile.jpg",
+  brick: "/game/brick-tile.jpg",
+  container: "/game/container-tile.jpg",
+  sand: "/game/sand-tile.jpg",
+  plaster: "/game/plaster-tile.jpg",
+  rust: "/game/rust-tile.jpg",
 };
 
 const FALLBACK: Record<MatId, number> = {
@@ -318,7 +318,9 @@ function meshBox(b: BoxSpec, mats: Record<MatId, THREE.MeshStandardMaterial>): T
     const rx = Math.max(1, b.w / 2.5);
     const ry = Math.max(1, Math.max(b.h, b.d) / 2.5);
     for (let i = 0; i < uv.count; i++) {
-      uv.setXY(i, uv.getX(i) * rx, uv.getY(i) * ry);
+      const ox = ((b.x * 0.37) % 1 + 1) % 1;
+      const oy = ((b.z * 0.23 + b.y * 0.11) % 1 + 1) % 1;
+      uv.setXY(i, uv.getX(i) * rx + ox, uv.getY(i) * ry + oy);
     }
     uv.needsUpdate = true;
   }
@@ -587,7 +589,237 @@ function makeSiteLetter(ch: string, x: number, z: number): THREE.Group {
 export function buildMap(id: MapId, loader: THREE.TextureLoader, aniso: number): MapBuilt {
   if (id === "harbor") return buildHarbor(loader, aniso);
   if (id === "bazaar") return buildBazaar(loader, aniso);
+  if (id === "library") return buildLibrary(loader, aniso);
+  if (id === "street") return buildStreet(loader, aniso);
   return buildDepot(loader, aniso);
+}
+
+function buildStreet(loader: THREE.TextureLoader, aniso: number): MapBuilt {
+  const b: BoxSpec[] = [];
+  const W = 36;
+  const D = 64;
+  wall(b, 0, -0.2, 0, W, 0.4, D, "concrete");
+  wall(b, 0, 0.02, 0, 8, 0.08, D - 2, "dark");
+  wall(b, 0, 3.2, D / 2, W, 6.4, 0.6, "brick");
+  wall(b, 0, 3.2, -D / 2, W, 6.4, 0.6, "brick");
+  wall(b, W / 2, 3.2, 0, 0.6, 6.4, D, "brick");
+  wall(b, -W / 2, 3.2, 0, 0.6, 6.4, D, "brick");
+
+  const block = (x: number, z: number, w: number, d: number, h: number, m: MatId) => {
+    wall(b, x, h / 2, z, w, h, d, m);
+  };
+  block(-12, -20, 10, 14, 8, "plaster");
+  block(-12, 6, 10, 16, 7, "brick");
+  block(-12, 24, 10, 10, 6, "plaster");
+  block(12, -18, 10, 16, 9, "brick");
+  block(12, 8, 10, 12, 6.5, "plaster");
+  block(12, 24, 10, 8, 7, "brick");
+
+  wall(b, -2.2, 1.15, 2, 2.4, 2.1, 6.2, "metal");
+  wall(b, -2.2, 2.35, 4.2, 2.2, 1.3, 2.2, "metal");
+  deco(b, -2.2, 1.15, 2, 2.42, 0.28, 6.22, "accent");
+  wall(b, -3.5, 0.45, -0.6, 0.5, 0.9, 0.5, "dark");
+  wall(b, -0.9, 0.45, -0.6, 0.5, 0.9, 0.5, "dark");
+  wall(b, -3.5, 0.45, 4.6, 0.5, 0.9, 0.5, "dark");
+  wall(b, -0.9, 0.45, 4.6, 0.5, 0.9, 0.5, "dark");
+
+  deco(b, -6.2, 5.2, -20, 0.4, 6, 0.4, "rust");
+  deco(b, -6.2, 8.4, -20, 2.4, 0.7, 0.2, "accent");
+  deco(b, 6.4, 6.4, 8, 0.35, 8, 0.35, "metal");
+  deco(b, 6.4, 10.2, 8, 1.6, 0.5, 0.2, "accent");
+
+  // dark window grid on street faces, two floors, only over existing block z-ranges
+  const facade = (faceX: number, z0: number, z1: number) => {
+    const margin = 1.2;
+    const usable = z1 - z0 - margin * 2;
+    const n = Math.max(2, Math.round(usable / 2.05));
+    for (let i = 0; i < n; i++) {
+      const z = z0 + margin + (usable * i) / (n - 1);
+      deco(b, faceX, 1.8, z, 0.08, 0.9, 0.7, "dark");
+      deco(b, faceX, 4.05, z, 0.08, 0.9, 0.7, "dark");
+    }
+  };
+  facade(-6.94, -27, -13);
+  facade(-6.94, -2, 14);
+  facade(-6.94, 19, 29);
+  facade(6.94, -26, -10);
+  facade(6.94, 2, 14);
+  facade(6.94, 20, 28);
+
+  // crosswalk paint on asphalt only
+  for (const base of [12, -8]) {
+    for (const dz of [-0.72, 0, 0.72]) {
+      deco(b, 0, 0.075, base + dz, 6.2, 0.02, 0.34, "dark");
+    }
+  }
+
+  // sidewalk props (non-colliding)
+  deco(b, -5.2, 0.45, -11.3, 0.55, 0.9, 0.55, "metal");
+  deco(b, -5.75, 0.41, -11.9, 0.48, 0.82, 0.48, "metal");
+  deco(b, 5.45, 0.45, 5.8, 0.55, 0.9, 0.55, "metal");
+  deco(b, 5.95, 0.38, 6.45, 0.46, 0.76, 0.46, "rust");
+  const cone = (x: number, z: number) => {
+    deco(b, x, 0.12, z, 0.36, 0.24, 0.36, "accent");
+    deco(b, x, 0.38, z, 0.2, 0.32, 0.2, "accent");
+  };
+  cone(-4.55, 12.7);
+  cone(4.55, 12.7);
+  cone(-4.55, -8.6);
+  cone(4.55, -8.6);
+  deco(b, -5.85, 1.25, 21.2, 0.1, 2.5, 0.1, "metal");
+  deco(b, -5.85, 2.35, 21.2, 0.08, 0.7, 1.2, "accent");
+
+  const lampPost = (x: number, z: number) => {
+    const s = x < 0 ? 1 : -1;
+    deco(b, x, 2.75, z, 0.12, 5.5, 0.12, "dark");
+    deco(b, x + s * 0.3, 5.42, z, 0.68, 0.08, 0.16, "metal");
+    deco(b, x + s * 0.55, 5.28, z, 0.34, 0.14, 0.3, "accent");
+  };
+  lampPost(-5.7, -16);
+  lampPost(5.7, -18);
+  lampPost(-5.7, 9.5);
+  lampPost(5.7, 21);
+
+  // low sidewalk cover only — h ≤ 0.9, whole box in 4.2 ≤ |x| ≤ 7.2, |z| < 22
+  wall(b, -5.5, 0.38, -8.2, 1.8, 0.76, 0.42, "concrete");
+  wall(b, -5.9, 0.4, 4.4, 0.8, 0.8, 0.7, "metal");
+  wall(b, 5.4, 0.36, 13.4, 1.6, 0.72, 0.4, "concrete");
+  wall(b, 6.0, 0.42, -14.2, 0.6, 0.84, 1.2, "rust");
+
+  const sun = new THREE.DirectionalLight(0xfff4e0, 1.7);
+  sun.position.set(-10, 22, 8);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(1024, 1024);
+  sun.shadow.camera.near = 2;
+  sun.shadow.camera.far = 80;
+  sun.shadow.camera.left = -28;
+  sun.shadow.camera.right = 28;
+  sun.shadow.camera.top = 28;
+  sun.shadow.camera.bottom = -28;
+  const hemi = new THREE.HemisphereLight(0xc5ddff, 0x6a5a48, 1.15);
+
+  return buildFrom(
+    b,
+    {
+      spawnsCT: [
+        { x: -2, y: 0, z: 26 },
+        { x: 0, y: 0, z: 27 },
+        { x: 2, y: 0, z: 26 },
+        { x: -1, y: 0, z: 24.5 },
+        { x: 1, y: 0, z: 24.5 },
+      ],
+      spawnsTR: [
+        { x: -2, y: 0, z: -26 },
+        { x: 0, y: 0, z: -27 },
+        { x: 2, y: 0, z: -26 },
+        { x: -1, y: 0, z: -24.5 },
+        { x: 1, y: 0, z: -24.5 },
+      ],
+      sites: [
+        siteRoom("A", 12, -4, 9, 15, -7.2, -0.8),
+        siteRoom("B", -12, 16.5, -15, -9, 14.6, 18.4),
+      ],
+      bounds: { minX: -W / 2, maxX: W / 2, minZ: -D / 2, maxZ: D / 2 },
+      fog: new THREE.Fog(0x9eb6d6, 40, 110),
+      hemi,
+      sun,
+      lamps: [
+        { x: -5.7, y: 5.5, z: -16, c: 0xffc56a, i: 7.5 },
+        { x: 5.7, y: 5.5, z: -18, c: 0xffc56a, i: 8 },
+        { x: -5.7, y: 5.5, z: 9.5, c: 0xffd28a, i: 7 },
+        { x: 5.7, y: 5.5, z: 21, c: 0xffd28a, i: 8 },
+      ],
+    },
+    loader,
+    aniso,
+  );
+}
+
+function buildLibrary(loader: THREE.TextureLoader, aniso: number): MapBuilt {
+  const b: BoxSpec[] = [];
+  const W = 40;
+  const D = 34;
+  const H = 8;
+  wall(b, 0, -0.15, 0, W, 0.3, D, "wood");
+  wall(b, 0, H / 2, D / 2, W, H, 0.6, "plaster");
+  wall(b, 0, H / 2, -D / 2, W, H, 0.6, "plaster");
+  wall(b, W / 2, H / 2, 0, 0.6, H, D, "plaster");
+  wall(b, -W / 2, H / 2, 0, 0.6, H, D, "plaster");
+  wall(b, 0, H + 0.1, 0, W, 0.2, D, "wood");
+
+  const shelf = (x: number, z: number, tall = true) => {
+    wall(b, x, tall ? 1.6 : 0.9, z, 1.1, tall ? 3.2 : 1.8, 3.4, "wood");
+  };
+  for (const z of [-10, -4, 4, 10]) {
+    shelf(-8.2, z);
+    shelf(8.2, z);
+  }
+  shelf(-8.2, 0, false);
+  shelf(8.2, 0, false);
+
+  wall(b, 0, 3.09, 0, 3.4, 0.3, 12, "wood");
+  deco(b, -1.85, 3.7, 0, 0.12, 0.9, 12, "wood");
+  deco(b, 1.85, 3.7, 0, 0.12, 0.9, 12, "wood");
+  for (let i = 0; i < 9; i++) {
+    const h = 0.36 * (i + 1);
+    wall(b, 0, h / 2, 12.2 - i * 0.72, 3.4, h, 0.72, "wood");
+    wall(b, 0, h / 2, -12.2 + i * 0.72, 3.4, h, 0.72, "wood");
+  }
+
+  for (const z of [-8, 0, 8]) {
+    deco(b, -4, 0.02, z, 1.4, 0.04, 1.1, "plaster");
+    deco(b, 4, 0.02, z, 1.2, 0.04, 0.9, "plaster");
+  }
+
+  wall(b, 15.2, 0.7, 4.2, 1.6, 1.4, 1.2, "wood");
+  wall(b, -15.2, 0.7, 4.2, 1.6, 1.4, 1.2, "wood");
+
+  const sun = new THREE.DirectionalLight(0xfff1d6, 1.35);
+  sun.position.set(6, 16, 8);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(1024, 1024);
+  sun.shadow.camera.near = 1;
+  sun.shadow.camera.far = 50;
+  sun.shadow.camera.left = -22;
+  sun.shadow.camera.right = 22;
+  sun.shadow.camera.top = 18;
+  sun.shadow.camera.bottom = -18;
+  const hemi = new THREE.HemisphereLight(0xfff6e8, 0x4a3a28, 1.35);
+
+  return buildFrom(
+    b,
+    {
+      spawnsCT: [
+        { x: -2, y: 0, z: 14.4 },
+        { x: 0, y: 0, z: 14.8 },
+        { x: 2, y: 0, z: 14.4 },
+        { x: -1, y: 0, z: 13.2 },
+        { x: 1, y: 0, z: 13.2 },
+      ],
+      spawnsTR: [
+        { x: -2, y: 0, z: -14.4 },
+        { x: 0, y: 0, z: -14.8 },
+        { x: 2, y: 0, z: -14.4 },
+        { x: -1, y: 0, z: -13.2 },
+        { x: 1, y: 0, z: -13.2 },
+      ],
+      sites: [
+        siteRoom("A", 15.2, 0, 13.2, 18.4, -3.2, 3.2),
+        siteRoom("B", -15.2, 0, -18.4, -13.2, -3.2, 3.2),
+      ],
+      bounds: { minX: -W / 2, maxX: W / 2, minZ: -D / 2, maxZ: D / 2 },
+      fog: new THREE.Fog(0xc4b39a, 28, 70),
+      hemi,
+      sun,
+      lamps: [
+        { x: -6, y: 6.4, z: -8, c: 0xffe0b0, i: 8 },
+        { x: 6, y: 6.4, z: 8, c: 0xffe0b0, i: 8 },
+        { x: 0, y: 6.6, z: 0, c: 0xfff4d8, i: 10 },
+      ],
+    },
+    loader,
+    aniso,
+  );
 }
 
 function buildDepot(loader: THREE.TextureLoader, aniso: number): MapBuilt {
@@ -675,6 +907,22 @@ function buildDepot(loader: THREE.TextureLoader, aniso: number): MapBuilt {
   // site markers — empty plates inside the rooms
   deco(b, 18.5, 0.04, 0, 3.2, 0.05, 3.2, "accent");
   deco(b, -18.5, 0.04, 0, 3.2, 0.05, 3.2, "accent");
+
+  // wall ribs outside the site pads, lane paint, pallets, gantry sign
+  for (const x of [21.2, -21.2]) {
+    for (const z of [-12, -9.5, -7, -4.75, 4.75, 7, 9.5, 12]) {
+      deco(b, x, 3.15, z, 0.08, 5.5, 0.18, "dark");
+    }
+  }
+  deco(b, 2.2, 0.04, 0, 0.22, 0.025, 14.8, "accent");
+  deco(b, -2.2, 0.04, 0, 0.22, 0.025, 14.8, "accent");
+  deco(b, 7.9, 0.06, 0.45, 1.15, 0.1, 0.9, "wood");
+  deco(b, -7.9, 0.06, 0.45, 1.15, 0.1, 0.9, "wood");
+  deco(b, 6.3, 0.06, -4.7, 1.2, 0.1, 0.8, "wood");
+  deco(b, -6.3, 0.06, -4.7, 1.2, 0.1, 0.8, "wood");
+  deco(b, 0, 5.8, 6, 2.4, 0.72, 0.07, "accent");
+  deco(b, -1.05, 6.52, 6, 0.05, 1.15, 0.05, "dark");
+  deco(b, 1.05, 6.52, 6, 0.05, 1.15, 0.05, "dark");
 
   const sun = new THREE.DirectionalLight(0xfff1dc, 2.4);
   sun.position.set(8, 18, 6);
@@ -803,6 +1051,17 @@ function buildHarbor(loader: THREE.TextureLoader, aniso: number): MapBuilt {
   deco(b, 16, 0.05, 8, 4, 0.05, 4, "accent");
   deco(b, -16, 0.05, -8, 4, 0.05, 4, "accent");
 
+  // bollards, dock stripe, container doors, crane board — non-colliding
+  for (const x of [6, -6]) {
+    for (const z of [-12, -6, 6, 12]) {
+      deco(b, x, 0.35, z, 0.25, 0.7, 0.25, "accent");
+    }
+  }
+  deco(b, 0, 0.06, 6, 10, 0.02, 0.38, "dark");
+  deco(b, -8, 1.3, 1.3, 2.2, 1.6, 0.06, "rust");
+  deco(b, 8, 1.3, 1.3, 2.2, 1.6, 0.06, "rust");
+  deco(b, 21.55, 8, -11, 0.06, 0.85, 1.45, "accent");
+
   const sun = new THREE.DirectionalLight(0xffd2a8, 2.25);
   sun.position.set(-12, 22, 8);
   sun.castShadow = true;
@@ -904,6 +1163,31 @@ function buildBazaar(loader: THREE.TextureLoader, aniso: number): MapBuilt {
     wall(b, -6.85, 0.18 + i * 0.4, 14.15 - i * 0.08, 1.45, 0.18, 0.65, "plaster");
   }
 
+  // Side-stall awnings only (z = ±4). The z = 0 stall row already has roofs.
+  for (const z of [-4, 4]) {
+    for (const x of [-8, 3.4, 8]) {
+      deco(b, x, 2.15, z, 2.2, 0.08, 1.1, "accent");
+    }
+  }
+  // Lanterns just outside the arch posts at (±3.6, ±6.4).
+  for (const x of [-5.2, 5.2]) {
+    for (const z of [-6.4, 6.4]) {
+      deco(b, x, 3.29, z, 0.06, 0.7, 0.06, "dark");
+      deco(b, x, 2.8, z, 0.28, 0.28, 0.28, "accent");
+    }
+  }
+  // Open-market rugs, off the stall row and the crates at (±4.5, ±3.2).
+  deco(b, -5, 0.05, 2, 2.4, 0.04, 1.6, "sand");
+  deco(b, 5, 0.05, -2, 2.4, 0.04, 1.6, "sand");
+  // Street windows: NW house (-12, 10) and SE house (12, -10) only. Site houses skipped.
+  deco(b, -7, 1.6, 8.5, 0.08, 0.9, 0.7, "dark");
+  deco(b, -7, 1.6, 11.5, 0.08, 0.9, 0.7, "dark");
+  deco(b, 7, 1.6, -11.5, 0.08, 0.9, 0.7, "dark");
+  deco(b, 7, 1.6, -8.5, 0.08, 0.9, 0.7, "dark");
+  // Market sign over the crossing, above head height. Pole runs from y=1.6 up to the board.
+  deco(b, 0, 3.4, 0, 1.6, 0.5, 0.08, "accent");
+  deco(b, 0, 2.375, 0, 0.08, 1.55, 0.08, "dark");
+
   const sun = new THREE.DirectionalLight(0xc8d4f0, 1.42);
   sun.position.set(4, 18, -6);
   sun.castShadow = true;
@@ -951,78 +1235,133 @@ function buildBazaar(loader: THREE.TextureLoader, aniso: number): MapBuilt {
 export function createSoldier(team: Team): THREE.Group {
   const g = new THREE.Group();
   const ct = team === "CT";
-  const cloth = ct ? 0x1a3558 : 0x3d2a18;
-  const pants = ct ? 0x15283f : 0x2a2214;
-  const vest = ct ? 0x2e6bb0 : 0xa33a28;
-  const skin = 0xc4a07a;
-  const dark = 0x121418;
+  const cloth = new THREE.Color(ct ? 0x1a3558 : 0x3d2a18);
+  const pants = new THREE.Color(ct ? 0x15283f : 0x2a2214);
+  const vest = new THREE.Color(ct ? 0x2e6bb0 : 0xa33a28);
+  const skin = new THREE.Color(0xc4a07a);
+  const dark = new THREE.Color(0x121418);
   const helmC = ct ? 0x1c2c44 : 0x2a1c14;
   const visorC = ct ? 0x3ad0ff : 0xff4a2a;
+
+  const bones: THREE.Bone[] = [];
+  const bone = (name: string, parent: THREE.Object3D, x = 0, y = 0, z = 0) => {
+    const b = new THREE.Bone();
+    b.name = name;
+    b.position.set(x, y, z);
+    parent.add(b);
+    bones.push(b);
+    return b;
+  };
+  const hips = bone("hips", g, 0, 0.92, 0);
+  const legL = bone("legL", hips, -0.1, 0, 0);
+  const shinL = bone("shinL", legL, 0, -0.42, 0);
+  const legR = bone("legR", hips, 0.1, 0, 0);
+  const shinR = bone("shinR", legR, 0, -0.42, 0);
+  const spine = bone("spine", hips, 0, 0.16, 0);
+  const chest = bone("body", spine, 0, 0.28, 0);
+  const head = bone("head", chest, 0, 0.28, 0);
+  const armL = bone("armL", chest, -0.22, 0.08, 0.02);
+  armL.rotation.x = -1.05;
+  const foreL = bone("foreL", armL, 0, -0.28, 0);
+  const armR = bone("armR", chest, 0.22, 0.08, 0.04);
+  armR.rotation.x = -1.15;
+  const foreR = bone("foreR", armR, 0, -0.26, 0);
+  hips.updateMatrixWorld(true);
+
+  const pos: number[] = [];
+  const nor: number[] = [];
+  const col: number[] = [];
+  const skinI: number[] = [];
+  const skinW: number[] = [];
+  const idx: number[] = [];
+  let base = 0;
+  const v = new THREE.Vector3();
+  const nn = new THREE.Vector3();
+  const push = (src: THREE.BufferGeometry, boneIndex: number, color: THREE.Color, matrix: THREE.Matrix4) => {
+    const p = src.getAttribute("position");
+    const n = src.getAttribute("normal");
+    const nm = new THREE.Matrix3().getNormalMatrix(matrix);
+    const start = base;
+    for (let i = 0; i < p.count; i++) {
+      v.fromBufferAttribute(p as THREE.BufferAttribute, i).applyMatrix4(matrix);
+      nn.fromBufferAttribute(n as THREE.BufferAttribute, i).applyMatrix3(nm).normalize();
+      pos.push(v.x, v.y, v.z);
+      nor.push(nn.x, nn.y, nn.z);
+      col.push(color.r, color.g, color.b);
+      skinI.push(boneIndex, 0, 0, 0);
+      skinW.push(1, 0, 0, 0);
+    }
+    const index = src.getIndex();
+    if (index) {
+      for (let i = 0; i < index.count; i++) idx.push(start + index.getX(i));
+    } else {
+      for (let i = 0; i < p.count; i++) idx.push(start + i);
+    }
+    base += p.count;
+    src.dispose();
+  };
+  const limb = (b: THREE.Bone, r0: number, r1: number, len: number, color: THREE.Color) => {
+    const geo = new THREE.CylinderGeometry(r0, r1, len, 8);
+    geo.translate(0, -len / 2, 0);
+    push(geo, bones.indexOf(b), color, b.matrixWorld);
+  };
+  limb(legL, 0.07, 0.06, 0.42, pants);
+  limb(shinL, 0.055, 0.05, 0.4, pants);
+  limb(legR, 0.07, 0.06, 0.42, pants);
+  limb(shinR, 0.055, 0.05, 0.4, pants);
+  const pelvis = new THREE.SphereGeometry(0.12, 8, 6);
+  push(pelvis, bones.indexOf(hips), cloth, hips.matrixWorld);
+  const torso = new THREE.CylinderGeometry(0.16, 0.14, 0.28, 8);
+  torso.translate(0, 0.14, 0);
+  push(torso, bones.indexOf(spine), vest, spine.matrixWorld);
+  const chestGeo = new THREE.BoxGeometry(0.36, 0.28, 0.2);
+  chestGeo.translate(0, 0.08, 0.02);
+  push(chestGeo, bones.indexOf(chest), vest, chest.matrixWorld);
+  const skull = new THREE.SphereGeometry(0.12, 10, 8);
+  skull.translate(0, 0.06, 0);
+  push(skull, bones.indexOf(head), skin, head.matrixWorld);
+  limb(armL, 0.055, 0.045, 0.28, cloth);
+  limb(foreL, 0.045, 0.04, 0.24, cloth);
+  limb(armR, 0.055, 0.045, 0.28, cloth);
+  limb(foreR, 0.045, 0.04, 0.24, cloth);
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute("normal", new THREE.Float32BufferAttribute(nor, 3));
+  geo.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
+  geo.setAttribute("skinIndex", new THREE.Uint16BufferAttribute(skinI, 4));
+  geo.setAttribute("skinWeight", new THREE.Float32BufferAttribute(skinW, 4));
+  geo.setIndex(idx);
+  const mesh = new THREE.SkinnedMesh(
+    geo,
+    new THREE.MeshLambertMaterial({ vertexColors: true }),
+  );
+  mesh.name = "skin";
+  mesh.frustumCulled = false;
+  mesh.add(hips);
+  mesh.updateMatrixWorld(true);
+  mesh.bind(new THREE.Skeleton(bones));
+  g.add(mesh);
+
   const lamb = (c: number, em = 0) =>
     new THREE.MeshLambertMaterial({ color: c, emissive: em ? c : 0x000000, emissiveIntensity: em });
-  const box = (w: number, h: number, d: number, mat: THREE.Material, x: number, y: number, z: number, name?: string) => {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
-    m.position.set(x, y, z);
-    if (name) m.name = name;
-    g.add(m);
-    return m;
+  const helm = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.12, 0.32), lamb(helmC));
+  helm.position.set(0, 0.14, 0.02);
+  const visor = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.06, 0.06), lamb(visorC, 0.45));
+  visor.position.set(0, 0.05, 0.12);
+  head.add(helm, visor);
+  const boot = (parent: THREE.Bone, x: number) => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.08, 0.16), lamb(0x121418));
+    m.position.set(x, -0.4, 0.03);
+    parent.add(m);
   };
-  const mCloth = lamb(cloth);
-  const mPants = lamb(pants);
-  const mVest = lamb(vest, 0.12);
-  const mSkin = lamb(skin);
-  const mDark = lamb(dark);
-  const mHelm = lamb(helmC);
-  const mVisor = lamb(visorC, 0.35);
-
-  box(0.4, 0.22, 0.26, mPants, 0, 0.92, 0);
-  box(0.46, 0.54, 0.3, mVest, 0, 1.3, 0, "body");
-  box(0.18, 0.16, 0.08, mVest, 0.14, 1.28, 0.18);
-  box(0.18, 0.16, 0.08, mVest, -0.14, 1.28, 0.18);
-  box(0.12, 0.1, 0.08, mVest, 0, 1.12, 0.16);
-  box(0.32, 0.42, 0.16, mDark, 0, 1.28, -0.22);
-  box(0.22, 0.12, 0.22, mCloth, 0, 1.52, 0);
-  const head = box(0.26, 0.28, 0.26, mSkin, 0, 1.7, 0, "head");
-  void head;
-  box(0.32, 0.14, 0.34, mHelm, 0, 1.84, 0.02);
-  box(0.24, 0.07, 0.08, mVisor, 0, 1.72, 0.14);
-  if (!ct) box(0.3, 0.08, 0.08, lamb(0x6a2018), 0, 1.62, 0.08);
-
-  const armL = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.48, 0.13), mCloth);
-  armL.position.set(-0.3, 1.28, 0.06);
-  armL.rotation.x = -1.05;
-  armL.name = "armL";
-  const armR = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.48, 0.13), mCloth);
-  armR.position.set(0.3, 1.28, 0.06);
-  armR.rotation.x = -1.12;
-  armR.name = "armR";
-  g.add(armL, armR);
-  box(0.12, 0.1, 0.12, mSkin, -0.3, 1.02, 0.28);
-  box(0.12, 0.1, 0.12, mSkin, 0.3, 1.02, 0.28);
-
-  const legL = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.7, 0.17), mPants);
-  legL.position.set(-0.12, 0.38, 0);
-  legL.name = "legL";
-  const legR = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.7, 0.17), mPants);
-  legR.position.set(0.12, 0.38, 0);
-  legR.name = "legR";
-  g.add(legL, legR);
-  box(0.16, 0.12, 0.26, mDark, -0.12, 0.06, 0.05);
-  box(0.16, 0.12, 0.26, mDark, 0.12, 0.06, 0.05);
-  box(0.16, 0.1, 0.16, mDark, -0.12, 0.55, 0.08);
-  box(0.16, 0.1, 0.16, mDark, 0.12, 0.55, 0.08);
+  boot(shinL, 0);
+  boot(shinR, 0);
 
   const mount = new THREE.Group();
   mount.name = "gunMount";
   mount.position.set(0.2, 1.16, 0.34);
   g.add(mount);
-  g.traverse((o) => {
-    const m = o as THREE.Mesh;
-    if (m.isMesh) {
-      m.castShadow = true;
-      m.receiveShadow = true;
-    }
-  });
   return g;
 }
 

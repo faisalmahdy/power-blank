@@ -1,6 +1,6 @@
 export type Team = "CT" | "TR";
 export type Mode = "tdm" | "demolition" | "elimination";
-export type MapId = "depot" | "harbor" | "bazaar";
+export type MapId = "depot" | "harbor" | "bazaar" | "library" | "street";
 export type Phase =
   | "title"
   | "channels"
@@ -109,6 +109,7 @@ export type ScoreRow = {
   bot: boolean;
   alive: boolean;
   rkills: number;
+  bomb: boolean;
 };
 
 export type KillFeedItem = {
@@ -162,6 +163,9 @@ export type HudSnapshot = {
   roundsTR: number;
   hitmarker: number;
   headshot: boolean;
+  dmg: number;
+  dmgHead: boolean;
+  dmgT: number;
   hurt: number;
   flash: number;
   killMsg: string;
@@ -174,6 +178,7 @@ export type HudSnapshot = {
   siteHint: string;
   allies: Array<{ x: number; z: number; yaw: number }>;
   enemies: Array<{ x: number; z: number; vis: boolean }>;
+  tags: Array<{ name: string; x: number; y: number }>;
   lookingName: string;
   lookingTeam: Team | null;
   lookingHp: number;
@@ -188,14 +193,24 @@ export type HudSnapshot = {
   bombZ: number;
   bombVisible: boolean;
   money: number;
+  cash: number;
+  cashT: number;
   bloom: number;
+  speed: number;
+  spread: number;
+  arc: boolean;
+  arcX: number;
+  arcZ: number;
   hurtDir: number;
   sites: Array<{ name: string; x: number; z: number }>;
+  blocks: Array<{ x: number; z: number; w: number; d: number }>;
   bannerKind: "" | "count" | "mission" | "round" | "match" | "bomb" | "defuse" | "blood" | "multi" | "down";
   bannerTeam: Team | null;
   kits: KitId[];
   reloadFrac: number;
   carrying: boolean;
+  walking: boolean;
+  bolting: boolean;
   roundsToWin: number;
   bombSite: string;
   smoke: number;
@@ -207,6 +222,8 @@ export type HudSnapshot = {
   primary: WeaponId;
   pistol: WeaponId;
   nade: WeaponId;
+  primaryOut: boolean;
+  pistolOut: boolean;
 };
 
 export type GameEvent =
