@@ -1,9 +1,9 @@
-import { ChevronLeft, Lock, Send, Settings2, ShoppingBag, Swords, Users } from "lucide-react";
+import { ChevronLeft, Lock, Send, Settings2, ShoppingBag, Users } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { CHANNELS, usePB } from "@/game/store";
 import { MAP_META, STR } from "@/game/strings";
-import { NADE_IDS, PISTOL_IDS, PRIMARY_IDS, WEAPONS, magOf } from "@/game/weapons";
+import { NADE_IDS, PISTOL_IDS, PRIMARY_IDS, WEAPONS } from "@/game/weapons";
 import type { MapId, Mode, RoomInfo, WeaponId } from "@/game/types";
 import { HangoutPreview } from "./Hangout";
 import { bootAudio, lobbyCount } from "@/game/audio";
@@ -17,6 +17,8 @@ function pingTone(ms: number) {
 export function TitleScreen() {
   const s = usePB();
   const t = STR[s.settings.locale];
+  const last = CHANNELS.find((c) => c.id === s.lastChannelId);
+  const lastRoom = s.lastRoom;
   return (
     <div className="relative h-dvh overflow-hidden bg-bg text-fg">
       <img
@@ -55,21 +57,37 @@ export function TitleScreen() {
             className="mt-1 h-11 w-full border border-border bg-elevated px-3 font-display tracking-[0.2em] text-fg outline-none focus:border-accent"
           />
         </label>
-        <div className="mt-6 flex max-w-xl flex-col gap-2 sm:flex-row">
-          <button
-            type="button"
-            className="h-12 flex-1 bg-accent font-display text-lg tracking-[0.28em] text-bg"
-            onClick={() => s.quickMatch()}
-          >
-            {t.quick}
-          </button>
-          <button
-            type="button"
-            className="h-12 flex-1 border border-border font-display tracking-[0.2em]"
-            onClick={() => s.openChannels()}
-          >
-            {t.channels}
-          </button>
+        <div className="mt-6 flex max-w-xl flex-col gap-2">
+          {last ? (
+            <button
+              type="button"
+              className="h-12 w-full bg-accent font-display text-lg tracking-[0.28em] text-bg"
+              onClick={() => {
+                s.enterChannel(last);
+                if (lastRoom) s.joinRoom(lastRoom);
+              }}
+            >
+              {t.cont} · {lastRoom ? lastRoom.name : s.settings.locale === "id" ? last.nameId : last.name}
+            </button>
+          ) : null}
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <button
+              type="button"
+              className={`h-12 flex-1 font-display text-lg tracking-[0.28em] ${
+                s.lastChannelId ? "border border-border" : "bg-accent text-bg"
+              }`}
+              onClick={() => s.quickMatch()}
+            >
+              {t.quick}
+            </button>
+            <button
+              type="button"
+              className="h-12 flex-1 border border-border font-display tracking-[0.2em]"
+              onClick={() => s.openChannels()}
+            >
+              {t.channels}
+            </button>
+          </div>
         </div>
         <div className="mt-4 flex gap-3">
           <GhostBtn onClick={() => usePB.setState({ showShop: true })}>
@@ -104,23 +122,46 @@ function GhostBtn({ children, onClick }: { children: ReactNode; onClick: () => v
 export function ChannelScreen() {
   const s = usePB();
   const t = STR[s.settings.locale];
+  const bestPing = Math.min(...CHANNELS.map((c) => c.ping));
+  const hottest = Math.max(...CHANNELS.map((c) => c.pop / c.cap));
   return (
     <Shell title={t.channels} onBack={() => s.go("title")}>
       <div className="grid gap-2">
         {CHANNELS.map((c) => {
-          const fill = Math.round((c.pop / c.cap) * 100);
+          const fill = c.pop / c.cap;
+          const pct = Math.round(fill * 100);
           const pingC = pingTone(c.ping);
+          const isRec = c.ping === bestPing;
+          const isHot = c.pop / c.cap === hottest;
+          const isLast = s.lastChannelId === c.id;
           return (
             <button
               key={c.id}
               type="button"
               onClick={() => s.enterChannel(c)}
-              className="border border-border bg-surface px-4 py-3 text-left hover:border-accent"
+              className="min-h-12 border border-border bg-surface px-4 py-3 text-left hover:border-accent"
             >
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
-                  <div className="font-display tracking-[0.22em]">
-                    {s.settings.locale === "id" ? c.nameId : c.name}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-display tracking-[0.22em]">
+                      {s.settings.locale === "id" ? c.nameId : c.name}
+                    </span>
+                    {isRec ? (
+                      <span className="border border-hp px-1.5 py-0.5 font-display text-[10px] tracking-widest text-hp">
+                        {t.rec}
+                      </span>
+                    ) : null}
+                    {isHot ? (
+                      <span className="border border-tr px-1.5 py-0.5 font-display text-[10px] tracking-widest text-tr">
+                        {t.hot}
+                      </span>
+                    ) : null}
+                    {isLast ? (
+                      <span className="border border-accent px-1.5 py-0.5 font-display text-[10px] tracking-widest text-accent">
+                        {t.last}
+                      </span>
+                    ) : null}
                   </div>
                   <div className="mt-0.5 font-mono text-xs text-muted">
                     {c.pop}/{c.cap} {t.players}
@@ -131,8 +172,14 @@ export function ChannelScreen() {
                   <Users className="size-4 text-accent" />
                 </div>
               </div>
-              <div className="mt-2 h-1.5 overflow-hidden bg-elevated">
-                <div className="h-full bg-accent" style={{ width: `${fill}%` }} />
+              <div className="mt-2 flex items-center gap-2">
+                <div className="h-1.5 min-w-0 flex-1 overflow-hidden bg-elevated">
+                  <div
+                    className={`h-full ${pct >= 90 ? "bg-tr" : pct >= 70 ? "bg-warn" : "bg-hp"}`}
+                    style={{ width: `${pct}%` }}
+                  />
+                </div>
+                <span className="shrink-0 font-mono text-[10px] text-muted">{pct}%</span>
               </div>
             </button>
           );
@@ -152,6 +199,47 @@ export function RoomScreen() {
   const [gate, setGate] = useState<RoomInfo | null>(null);
   const [pin, setPin] = useState("");
   const [pinErr, setPinErr] = useState(false);
+  const [modeFilter, setModeFilter] = useState<"all" | Mode>("all");
+  const [mapFilter, setMapFilter] = useState<"all" | MapId>("all");
+  const [hideFull, setHideFull] = useState(false);
+  const [query, setQuery] = useState("");
+  const [sortBy, setSortBy] = useState<"num" | "ping" | "fill">("num");
+  const q = query.trim().toUpperCase();
+  const hit = (r: RoomInfo) =>
+    !q ||
+    r.name.toUpperCase().includes(q) ||
+    (MAP_META[r.map]?.name ?? "").toUpperCase().includes(q);
+  const seat = (r: RoomInfo) => !hideFull || r.players < r.cap;
+  const listed = s.rooms
+    .map((r, i) => ({ r, i }))
+    .filter(
+      (x) =>
+        (modeFilter === "all" || x.r.mode === modeFilter) &&
+        (mapFilter === "all" || x.r.map === mapFilter) &&
+        seat(x.r) &&
+        hit(x.r),
+    )
+    .sort((a, b) => {
+      if (sortBy === "ping") return a.r.ping - b.r.ping || a.i - b.i;
+      if (sortBy === "fill") {
+        const fa = a.r.players / Math.max(1, a.r.cap);
+        const fb = b.r.players / Math.max(1, b.r.cap);
+        return fb - fa || a.i - b.i;
+      }
+      return a.i - b.i;
+    });
+  const byMap = (r: RoomInfo) => mapFilter === "all" || r.map === mapFilter;
+  const byMode = (r: RoomInfo) => modeFilter === "all" || r.mode === modeFilter;
+  const nAll = s.rooms.filter((r) => byMap(r) && seat(r) && hit(r)).length;
+  const nDem = s.rooms.filter((r) => byMap(r) && seat(r) && hit(r) && r.mode === "demolition").length;
+  const nTdm = s.rooms.filter((r) => byMap(r) && seat(r) && hit(r) && r.mode === "tdm").length;
+  const nElim = s.rooms.filter((r) => byMap(r) && seat(r) && hit(r) && r.mode === "elimination").length;
+  const nMapAll = s.rooms.filter((r) => byMode(r) && seat(r) && hit(r)).length;
+  const nDepot = s.rooms.filter((r) => byMode(r) && seat(r) && hit(r) && r.map === "depot").length;
+  const nHarbor = s.rooms.filter((r) => byMode(r) && seat(r) && hit(r) && r.map === "harbor").length;
+  const nBazaar = s.rooms.filter((r) => byMode(r) && seat(r) && hit(r) && r.map === "bazaar").length;
+  const nLibrary = s.rooms.filter((r) => byMode(r) && seat(r) && hit(r) && r.map === "library").length;
+  const nStreet = s.rooms.filter((r) => byMode(r) && seat(r) && hit(r) && r.map === "street").length;
   function tryPin() {
     if (!gate) return;
     if (pin.trim() === "1234") {
@@ -184,6 +272,85 @@ export function RoomScreen() {
           {t.quick}
         </button>
       </div>
+      <input
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder={t.searchRoom}
+        className="mb-3 h-10 w-full border border-border bg-elevated px-3 font-display tracking-[0.16em] outline-none placeholder:text-faint"
+      />
+      <div className="mb-3 grid grid-cols-4 gap-1">
+        {(
+          [
+            ["all", t.all, nAll],
+            ["demolition", "DEM", nDem],
+            ["tdm", "TDM", nTdm],
+            ["elimination", "ELIM", nElim],
+          ] as const
+        ).map(([id, label, n]) => (
+          <button
+            key={id}
+            type="button"
+            onClick={() => setModeFilter(id)}
+            className={`h-10 border font-display text-[11px] tracking-[0.14em] ${
+              modeFilter === id ? "border-accent bg-accent text-bg" : "border-border text-muted"
+            }`}
+          >
+            {label} {n}
+          </button>
+        ))}
+      </div>
+      <div className="mb-3 grid grid-cols-3 gap-1 md:grid-cols-6">
+        {(
+          [
+            ["all", t.all, nMapAll],
+            ["depot", "DEPOT", nDepot],
+            ["harbor", "HARBOR", nHarbor],
+            ["bazaar", "BAZAAR", nBazaar],
+            ["library", "LIBRARY", nLibrary],
+            ["street", "STREET", nStreet],
+          ] as const
+        ).map(([id, label, n]) => (
+          <button
+            key={id}
+            type="button"
+            onClick={() => setMapFilter(id)}
+            className={`h-10 border font-display text-[10px] tracking-[0.12em] ${
+              mapFilter === id ? "border-accent bg-accent text-bg" : "border-border text-muted"
+            }`}
+          >
+            {label} {n}
+          </button>
+        ))}
+      </div>
+      <div className="mb-3 flex gap-1">
+        <button
+          type="button"
+          onClick={() => setHideFull((v) => !v)}
+          className={`h-10 min-w-0 flex-1 border font-display text-[10px] tracking-[0.14em] ${
+            hideFull ? "border-accent bg-accent text-bg" : "border-border text-muted"
+          }`}
+        >
+          {t.hideFull}
+        </button>
+        {(
+          [
+            ["num", "#"],
+            ["ping", t.sortPing],
+            ["fill", t.sortFill],
+          ] as const
+        ).map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            onClick={() => setSortBy(id)}
+            className={`h-10 min-w-14 shrink-0 border px-2 font-display text-[10px] tracking-[0.14em] ${
+              sortBy === id ? "border-accent bg-accent text-bg" : "border-border text-muted"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
       <div className="border border-border">
         <div className="hidden grid-cols-12 bg-elevated px-3 py-2 font-display text-[10px] tracking-widest text-muted sm:grid">
           <span className="col-span-4">{t.room}</span>
@@ -191,37 +358,47 @@ export function RoomScreen() {
           <span className="col-span-3">{t.mode}</span>
           <span className="col-span-2">{t.players}</span>
         </div>
-        {s.rooms.map((r, i) => (
+        {listed.map(({ r, i }) => {
+          const mine = s.lastRoom?.id === r.id;
+          const row = mine && s.lastRoom ? { ...r, locked: s.lastRoom.locked } : r;
+          return (
           <button
             key={r.id}
             type="button"
-            disabled={r.players >= r.cap}
+            disabled={row.players >= row.cap}
             onClick={() => {
-              if (r.locked) {
-                setGate(r);
+              if (row.locked) {
+                setGate(row);
                 setPin("");
                 setPinErr(false);
                 return;
               }
-              s.joinRoom(r);
+              s.joinRoom(row);
             }}
-            className="grid w-full grid-cols-2 border-t border-border px-3 py-3 text-left hover:bg-elevated disabled:opacity-40 sm:grid-cols-12 sm:items-center sm:py-2"
+            className={`grid w-full grid-cols-2 border-t border-border px-3 py-3 text-left hover:bg-elevated disabled:opacity-40 sm:grid-cols-12 sm:items-center sm:py-2 ${
+              mine ? "border-l-2 border-l-accent bg-elevated" : ""
+            }`}
           >
             <span className="col-span-2 flex min-w-0 items-center gap-2 sm:col-span-4">
               <span className="relative h-12 w-16 shrink-0">
                 <img
-                  src={MAP_META[r.map]?.splash ?? "/game/container.jpg"}
+                  src={MAP_META[row.map]?.splash ?? "/game/container.jpg"}
                   alt=""
-                  className={`h-12 w-16 object-cover border border-border ${r.locked ? "opacity-50" : ""}`}
+                  className={`h-12 w-16 object-cover border border-border ${row.locked ? "opacity-50" : ""}`}
                   crossOrigin="anonymous"
                 />
-                {r.locked ? (
+                {row.locked ? (
                   <Lock className="absolute inset-0 m-auto size-5 text-warn" />
                 ) : null}
               </span>
-              <span className="truncate font-display tracking-wider">
+              <span className="min-w-0 truncate font-display tracking-wider">
                 <span className="mr-2 font-mono text-[10px] text-faint">#{String(i + 1).padStart(2, "0")}</span>
                 {r.name}
+                {mine ? (
+                  <span className="ml-2 border border-accent px-1.5 py-0.5 font-display text-[10px] tracking-widest text-accent">
+                    {t.last}
+                  </span>
+                ) : null}
               </span>
             </span>
             <span className="mt-1 font-mono text-xs text-muted sm:col-span-3 sm:mt-0 sm:text-sm">
@@ -257,7 +434,13 @@ export function RoomScreen() {
               </span>
             </span>
           </button>
-        ))}
+          );
+        })}
+        {listed.length === 0 ? (
+          <div className="border-t border-border px-3 py-6 text-center font-display tracking-[0.28em] text-muted">
+            {t.emptyRooms}
+          </div>
+        ) : null}
       </div>
       {open && (
         <Modal onClose={() => setOpen(false)} title={t.create}>
@@ -411,12 +594,14 @@ export function WaitingRoom() {
   const ctLive = ct.filter((x) => !x.empty).length;
   const trLive = tr.filter((x) => !x.empty).length;
   const filled = s.slots.filter((x) => !x.empty).length;
+  const readyN = s.slots.filter((x) => !x.empty && x.ready).length;
+  const allReady = filled > 0 && readyN === filled;
   const meta = MAP_META[room.map];
   const youReady = s.ready;
   const modeLine =
     room.mode === "tdm" ? t.tdm : room.mode === "demolition" ? `${t.demolition} · ${t.firstTo}` : t.elimination;
   function begin() {
-    if (launch > 0) return;
+    if (launch > 0 || !allReady) return;
     abortLaunch.current = false;
     bootAudio();
     s.fillEmpty();
@@ -450,6 +635,7 @@ export function WaitingRoom() {
           <div className="font-display tracking-[0.25em]">{room.name}</div>
           <div className="font-mono text-[10px] text-muted">
             {t.roomNo} · {filled}/{room.cap} · {t.host}
+            {room.locked ? ` · ${t.locked}` : ""}
             {s.lastScore ? ` · ${s.lastScore.ct}:${s.lastScore.tr}` : ""}
           </div>
         </div>
@@ -460,8 +646,30 @@ export function WaitingRoom() {
       <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden md:grid-cols-[1fr_300px]">
         <div className="flex min-h-0 flex-col overflow-hidden">
           <div className="grid min-h-0 flex-1 grid-cols-2 overflow-auto">
-            <SlotCol title="CT" color="bg-ct" img="/game/ct.jpg" slots={ct} you={s.nick.toUpperCase()} emptyLabel={t.emptySlot} />
-            <SlotCol title="TR" color="bg-tr" img="/game/tr.jpg" slots={tr} you={s.nick.toUpperCase()} emptyLabel={t.emptySlot} />
+            <SlotCol
+              title="CT"
+              color="bg-ct"
+              img="/game/ct.jpg"
+              slots={ct}
+              you={s.nick.toUpperCase()}
+              emptyLabel={t.emptySlot}
+              readyLabel={t.ready}
+              waitLabel={t.unready}
+              kickLabel={t.kick}
+              onKick={launch > 0 ? undefined : (name) => s.kickPlayer(name)}
+            />
+            <SlotCol
+              title="TR"
+              color="bg-tr"
+              img="/game/tr.jpg"
+              slots={tr}
+              you={s.nick.toUpperCase()}
+              emptyLabel={t.emptySlot}
+              readyLabel={t.ready}
+              waitLabel={t.unready}
+              kickLabel={t.kick}
+              onKick={launch > 0 ? undefined : (name) => s.kickPlayer(name)}
+            />
           </div>
           <div className="border-t border-border bg-panel p-2">
             <div className="mb-1 max-h-20 overflow-auto font-mono text-[11px] text-muted">
@@ -562,8 +770,18 @@ export function WaitingRoom() {
             <button
               type="button"
               disabled={launch > 0}
+              onClick={() => s.toggleLock()}
+              className={`mt-4 h-10 w-full border font-display text-xs tracking-[0.2em] disabled:opacity-40 ${
+                room.locked ? "border-warn text-warn" : "border-border"
+              }`}
+            >
+              {room.locked ? t.unlockRoom : t.lockRoom}
+            </button>
+            <button
+              type="button"
+              disabled={launch > 0}
               onClick={() => s.swapTeam()}
-              className="mt-4 h-10 w-full border border-border font-display text-xs tracking-[0.2em] disabled:opacity-40"
+              className="mt-2 h-10 w-full border border-border font-display text-xs tracking-[0.2em] disabled:opacity-40"
             >
               {t.swap} · {s.team}
             </button>
@@ -580,10 +798,10 @@ export function WaitingRoom() {
             <button
               type="button"
               onClick={begin}
-              disabled={launch > 0}
+              disabled={launch > 0 || !allReady}
               className="mt-2 hidden h-12 w-full bg-accent font-display tracking-[0.28em] text-bg disabled:opacity-50 md:block"
             >
-              {t.start}
+              {allReady ? t.start : `${readyN}/${filled} ${t.ready}`}
             </button>
           </div>
         </aside>
@@ -595,10 +813,10 @@ export function WaitingRoom() {
         <button
           type="button"
           onClick={begin}
-          disabled={launch > 0}
+          disabled={launch > 0 || !allReady}
           className="h-12 w-full bg-accent font-display tracking-[0.28em] text-bg disabled:opacity-50"
         >
-          {t.start}
+          {allReady ? t.start : `${readyN}/${filled} ${t.ready}`}
         </button>
       </div>
       {launch > 0 ? (
@@ -729,6 +947,10 @@ function SlotCol({
   slots,
   you,
   emptyLabel,
+  readyLabel,
+  waitLabel,
+  kickLabel,
+  onKick,
 }: {
   title: string;
   color: string;
@@ -736,6 +958,10 @@ function SlotCol({
   slots: Array<{ name: string; ready: boolean; you: boolean; ping: number; empty: boolean }>;
   you: string;
   emptyLabel: string;
+  readyLabel: string;
+  waitLabel: string;
+  kickLabel: string;
+  onKick?: (name: string) => void;
 }) {
   return (
     <div className="border-r border-border">
@@ -750,7 +976,10 @@ function SlotCol({
             </div>
           </div>
         ) : (
-          <div key={sl.name} className="pb-slot-in flex items-center gap-3 border-b border-border px-3 py-2">
+          <div
+            key={sl.name}
+            className={`pb-slot-in flex items-center gap-3 border-b border-border px-3 py-2 ${sl.ready ? "" : "opacity-70"}`}
+          >
             <img src={img} alt="" className="h-10 w-10 object-cover" crossOrigin="anonymous" />
             <div className="min-w-0 flex-1">
               <div className={`truncate font-display tracking-wider ${sl.name === you ? "text-accent" : ""}`}>
@@ -760,7 +989,22 @@ function SlotCol({
               </div>
               <div className={`font-mono text-[10px] ${pingTone(sl.ping)}`}>{sl.ping}ms</div>
             </div>
-            <Swords className={`size-4 ${sl.ready ? "text-hp" : "text-faint"}`} />
+            <span
+              className={`shrink-0 border px-1.5 py-1 font-display text-[10px] tracking-widest ${
+                sl.ready ? "border-hp text-hp" : "border-warn text-warn"
+              }`}
+            >
+              {sl.ready ? readyLabel : waitLabel}
+            </span>
+            {onKick && !sl.you ? (
+              <button
+                type="button"
+                onClick={() => onKick(sl.name)}
+                className="h-10 shrink-0 border border-tr px-2 font-display text-[10px] tracking-widest text-tr"
+              >
+                {kickLabel}
+              </button>
+            ) : null}
           </div>
         ),
       )}
@@ -806,22 +1050,114 @@ function LoadoutPick({
   );
 }
 
+function GunThumb({ id }: { id: WeaponId }) {
+  const [src, setSrc] = useState("");
+  useEffect(() => {
+    let live = true;
+    void import("@/game/preview").then(({ gunThumb }) => {
+      if (live) setSrc(gunThumb(id));
+    });
+    return () => {
+      live = false;
+    };
+  }, [id]);
+  if (!src) return <div className="h-16" />;
+  return <img src={src} alt="" className="h-16 w-full object-contain" />;
+}
+
+function ShieldThumb() {
+  const [src, setSrc] = useState("");
+  useEffect(() => {
+    let live = true;
+    void import("@/game/preview").then(({ shieldThumb }) => {
+      if (live) setSrc(shieldThumb());
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+  if (!src) return <div className="h-16" />;
+  return <img src={src} alt="" className="h-16 w-full object-contain" />;
+}
+
+function SoldierStage({ gun }: { gun: WeaponId }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas) return;
+    let stop = () => {};
+    let dead = false;
+    void import("@/game/preview").then(({ mountSoldier }) => {
+      if (dead || !ref.current) return;
+      stop = mountSoldier(ref.current, gun);
+    });
+    return () => {
+      dead = true;
+      stop();
+    };
+  }, [gun]);
+  return <canvas ref={ref} className="h-full min-h-64 w-full" />;
+}
+
 export function ShopModal() {
   const s = usePB();
   const t = STR[s.settings.locale];
-  const tabs = [
-    { id: "primary" as const, label: t.primary, ids: PRIMARY_IDS },
-    { id: "pistol" as const, label: t.sidearm, ids: PISTOL_IDS },
-    { id: "nade" as const, label: t.lethal, ids: NADE_IDS },
+  const idn = s.settings.locale === "id";
+  const pages = [
+    { id: "weapon" as const, label: idn ? "SENJATA" : "WEAPON" },
+    { id: "character" as const, label: idn ? "KARAKTER" : "CHARACTER" },
+    { id: "item" as const, label: "ITEM" },
+    { id: "style" as const, label: idn ? "GAYA" : "STYLING" },
+    { id: "express" as const, label: idn ? "EMOSI" : "EXPRESS EMOTION" },
   ];
-  const [tab, setTab] = useState<(typeof tabs)[number]["id"]>("primary");
-  const ids = tabs.find((x) => x.id === tab)?.ids ?? PRIMARY_IDS;
-  const equipped =
-    tab === "primary" ? s.loadout.primary : tab === "pistol" ? s.loadout.pistol : s.loadout.nade;
+  const cats = [
+    { id: "all" as const, label: idn ? "SEMUA" : "All" },
+    { id: "main" as const, label: idn ? "UTAMA" : "Main" },
+    { id: "secondary" as const, label: idn ? "CADANGAN" : "Secondary" },
+    { id: "melee" as const, label: "Melee" },
+    { id: "explosive" as const, label: idn ? "LEDAK" : "Explosive" },
+    { id: "special" as const, label: "Special" },
+  ];
+  const [page, setPage] = useState<(typeof pages)[number]["id"]>("weapon");
+  const [cat, setCat] = useState<(typeof cats)[number]["id"]>("all");
+  const [q, setQ] = useState("");
+  const [title, setTitle] = useState(() =>
+    typeof localStorage === "undefined" ? "RECRUIT" : localStorage.getItem("pb-title") || "RECRUIT",
+  );
+  const allIds: WeaponId[] = [...PRIMARY_IDS, ...PISTOL_IDS, "knife", ...NADE_IDS];
+  const pool =
+    cat === "main"
+      ? PRIMARY_IDS
+      : cat === "secondary"
+        ? PISTOL_IDS
+        : cat === "melee"
+          ? (["knife"] as WeaponId[])
+          : cat === "explosive"
+            ? NADE_IDS
+            : cat === "special"
+              ? ([] as WeaponId[])
+              : allIds;
+  const query = q.trim().toLowerCase();
+  const ids = pool.filter((id) => !query || WEAPONS[id].name.toLowerCase().includes(query));
+  const ranks = [
+    { name: "RECRUIT", need: 0 },
+    { name: "OPERATOR", need: 10 },
+    { name: "VETERAN", need: 40 },
+    { name: "ACE", need: 100 },
+  ];
+  const next = ranks.find((r) => r.need > (ranks.find((x) => x.name === title)?.need ?? 0)) ?? ranks[ranks.length - 1]!;
 
   function own(id: WeaponId) {
     const w = WEAPONS[id];
     return s.unlocked.includes(id) || w.price === 0;
+  }
+
+  function equipped(id: WeaponId) {
+    const w = WEAPONS[id];
+    if (w.slot === "primary") return s.loadout.primary === id;
+    if (w.slot === "pistol") return s.loadout.pistol === id;
+    if (w.slot === "nade") return s.loadout.nade === id;
+    return s.loadout.primary === id;
   }
 
   function equip(id: WeaponId) {
@@ -837,130 +1173,235 @@ export function ShopModal() {
     equip(id);
   }
 
+  function acquire() {
+    if (s.stats.kills < next.need) return;
+    setTitle(next.name);
+    try {
+      localStorage.setItem("pb-title", next.name);
+    } catch {
+      /* ignore */
+    }
+  }
+
   const sheet = (
-    <div className="fixed inset-0 z-[80] flex flex-col bg-bg text-fg">
-      <header className="flex items-center gap-3 border-b border-border px-4 py-3">
-        <button
-          type="button"
-          onClick={() => usePB.setState({ showShop: false })}
-          className="text-muted"
-        >
+    <div className="fixed inset-0 z-[80] flex flex-col bg-[#070b12] text-fg">
+      <header className="flex items-center gap-2 border-b border-[#1d4e8f] bg-[#071426] px-3 py-2">
+        <button type="button" onClick={() => usePB.setState({ showShop: false })} className="text-muted">
           <ChevronLeft className="size-5" />
         </button>
-        <h1 className="font-display tracking-[0.28em]">{t.shop}</h1>
+        {pages.map((p) => (
+          <button
+            key={p.id}
+            type="button"
+            onClick={() => setPage(p.id)}
+            className={`h-8 px-3 font-display text-[11px] tracking-[0.16em] ${
+              page === p.id ? "bg-[#1d6fe0] text-white" : "text-[#9eb4d0]"
+            }`}
+          >
+            {p.label}
+          </button>
+        ))}
         <div className="ml-auto font-mono text-sm text-warn">
           {t.gp} {s.gp}
         </div>
       </header>
-      <div className="flex gap-1 border-b border-border px-3 py-2">
-        {tabs.map((x) => (
-          <button
-            key={x.id}
-            type="button"
-            onClick={() => setTab(x.id)}
-            className={`h-8 px-3 font-display text-[11px] tracking-[0.2em] ${
-              tab === x.id ? "bg-accent text-bg" : "border border-border text-muted"
-            }`}
-          >
-            {x.label}
-          </button>
-        ))}
-      </div>
-      <div className="flex-1 overflow-auto p-3">
-        <div className="grid gap-2 md:grid-cols-2">
-          {ids.map((id) => {
-            const w = WEAPONS[id];
-            const have = own(id);
-            const on = equipped === id;
-            const dmg = Math.min(100, (w.dmg / 110) * 100);
-            const rpm = Math.min(100, (w.rpm / 900) * 100);
-            const mag = Math.min(100, (magOf(w) / 40) * 100);
-            return (
-              <div
-                key={id}
-                className={`border bg-elevated p-3 ${on ? "border-accent" : "border-border"}`}
+      {page === "weapon" ? (
+        <>
+          <div className="flex flex-wrap gap-1 border-b border-[#16345c] bg-[#0b1626] px-3 py-2">
+            {cats.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                onClick={() => setCat(c.id)}
+                className={`h-8 px-3 font-display text-[11px] tracking-[0.14em] ${
+                  cat === c.id ? "bg-[#1d6fe0] text-white" : "text-[#9eb4d0]"
+                }`}
               >
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <div className="font-display tracking-[0.18em]">{w.name}</div>
-                    <div className="mt-0.5 font-mono text-[10px] uppercase tracking-widest text-muted">
-                      {w.tribe} · {w.automatic ? "AUTO" : "SEMI"}
+                {c.label}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-2 border-b border-[#16345c] px-3 py-2">
+            <label className="font-display text-[11px] tracking-widest text-[#9eb4d0]">
+              {idn ? "CARI" : "Search"}:
+            </label>
+            <input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              className="h-8 w-56 border border-[#24548f] bg-[#07101c] px-2 font-mono text-sm outline-none"
+            />
+            <span className="ml-auto font-mono text-sm text-[#d5e6ff]">
+              {ids.length} / {allIds.length}
+            </span>
+          </div>
+          <div className="flex-1 overflow-auto p-3">
+            <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
+              {ids.map((id) => {
+                const w = WEAPONS[id];
+                const have = own(id);
+                const on = equipped(id);
+                return (
+                  <div key={id} className="relative border border-[#1d4e8f] bg-[#07182c] p-2">
+                    <div
+                      className="absolute inset-0 opacity-40"
+                      style={{
+                        backgroundImage:
+                          "radial-gradient(circle at 50% 40%, #1a4e86 0, transparent 55%), repeating-linear-gradient(30deg, #12345a 0 1px, transparent 1px 10px)",
+                      }}
+                    />
+                    <div className="relative text-center font-display text-[11px] tracking-[0.16em]">{w.name}</div>
+                    <div className="relative py-3">
+                      <GunThumb id={id} />
+                      <span
+                        className={`absolute right-1 top-1 rotate-12 px-1 font-display text-[9px] tracking-widest text-white ${
+                          have ? "bg-[#c9a227]" : "bg-[#e216a8]"
+                        }`}
+                      >
+                        {have ? (idn ? "MILIK" : "OWNED") : "NOT USE"}
+                      </span>
+                    </div>
+                    <div className="relative flex items-center justify-between gap-2">
+                      <span className="font-mono text-[10px] text-[#8eb0d4]">
+                        {on ? (idn ? "TERPASANG" : "Equipped") : have ? "1D" : `(Not Used) ${w.price || 0}`}
+                      </span>
+                      {have ? (
+                        <button
+                          type="button"
+                          disabled={on || w.slot === "melee"}
+                          className="h-7 border border-[#1d6fe0] px-2 font-display text-[10px] tracking-widest text-[#7eb6ff] disabled:opacity-40"
+                          onClick={() => equip(id)}
+                        >
+                          {on ? (idn ? "PASANG" : "Equipped") : idn ? "PASANG" : "Equip"}
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={s.gp < w.price}
+                          className="h-7 bg-[#1d6fe0] px-2 font-display text-[10px] tracking-widest text-white disabled:opacity-40"
+                          onClick={() => buy(id)}
+                        >
+                          {idn ? "PAKAI" : "Use"} {w.price}
+                        </button>
+                      )}
                     </div>
                   </div>
-                  {on ? (
-                    <span className="font-display text-[10px] tracking-widest text-accent">{t.equipped}</span>
-                  ) : have ? (
-                    <span className="font-display text-[10px] tracking-widest text-hp">{t.owned}</span>
-                  ) : (
-                    <span className="inline-flex items-center gap-1 font-display text-[10px] tracking-widest text-muted">
-                      <Lock className="size-3" /> {t.locked}
+                );
+              })}
+              {cat === "special" ? (
+                <div className="relative border border-[#1d4e8f] bg-[#07182c] p-2">
+                  <div className="text-center font-display text-[11px] tracking-[0.16em]">SHIELD</div>
+                  <div className="relative flex h-16 items-center justify-center">
+                    <ShieldThumb />
+                    <span className="absolute right-1 top-1 rotate-12 bg-[#e216a8] px-1 font-display text-[9px] tracking-widest text-white">
+                      NOT USE
                     </span>
-                  )}
-                </div>
-                <div className="mt-3 space-y-1.5">
-                  <StatBar label="DMG" value={dmg} />
-                  <StatBar label="RPM" value={rpm} />
-                  <StatBar label="MAG" value={mag} />
-                </div>
-                {w.kits.length ? (
-                  <div className="mt-2 flex gap-1">
-                    {w.kits.map((k) => (
-                      <span
-                        key={k}
-                        className="border border-accent px-1 font-display text-[9px] tracking-[0.16em] text-accent"
-                      >
-                        {k.toUpperCase()}
-                      </span>
-                    ))}
                   </div>
-                ) : null}
-                <div className="mt-3 flex justify-end">
-                  {have ? (
-                    <button
-                      type="button"
-                      disabled={on}
-                      className="h-9 px-3 font-display text-xs tracking-widest text-accent disabled:text-muted"
-                      onClick={() => equip(id)}
-                    >
-                      {on ? t.equipped : t.buy}
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      disabled={s.gp < w.price}
-                      className="h-9 bg-accent px-3 font-display text-xs tracking-widest text-bg disabled:opacity-40"
-                      onClick={() => buy(id)}
-                    >
-                      {w.price} {t.gp}
-                    </button>
-                  )}
+                  <div className="text-center font-mono text-[10px] text-[#8eb0d4]">(Not Used) 3D</div>
                 </div>
-              </div>
-            );
-          })}
+              ) : null}
+            </div>
+          </div>
+        </>
+      ) : null}
+      {page === "character" ? (
+        <div className="grid flex-1 gap-3 overflow-auto p-3 md:grid-cols-[240px_1fr]">
+          <div className="relative min-h-64 overflow-hidden border border-[#1d4e8f] bg-[#071426]">
+            <SoldierStage gun={s.loadout.primary} />
+            <div className="absolute inset-x-0 bottom-0 bg-black/70 p-3">
+              <div className="font-display text-[10px] tracking-[0.28em] text-[#7eb6ff]">CT FORCE</div>
+              <div className="font-display text-lg tracking-widest">{s.nick.toUpperCase()}</div>
+              <div className="font-mono text-xs text-[#e2b53a]">{title}</div>
+            </div>
+          </div>
+          <div className="border border-[#1d4e8f] bg-black/50 p-3">
+            <div className="mb-3 flex gap-2">
+              <span className="bg-[#1d6fe0] px-3 py-1 font-display text-[11px] tracking-widest">
+                {idn ? "GELAR" : "Title"}
+              </span>
+              <span className="px-3 py-1 font-display text-[11px] tracking-widest text-[#9eb4d0]">My Info</span>
+            </div>
+            <div className="font-display text-sm tracking-[0.14em]">Advanced Combat Training</div>
+            <div className="mx-auto mt-4 flex w-44 flex-col items-center">
+              {ranks.map((r, i) => (
+                <div key={r.name} className="flex flex-col items-center">
+                  {i > 0 ? <div className="h-4 w-px bg-[#24548f]" /> : null}
+                  <div
+                    className={`grid h-9 w-9 place-items-center rounded-full border font-display text-[10px] ${
+                      title === r.name
+                        ? "border-[#e2b53a] bg-[#e2b53a]/20 text-[#e2b53a]"
+                        : "border-[#24548f] text-[#9eb4d0]"
+                    }`}
+                  >
+                    {i + 1}
+                  </div>
+                  <div className="font-display text-[10px] tracking-widest">{r.name}</div>
+                </div>
+              ))}
+            </div>
+            <div className="mt-4 grid grid-cols-2 gap-2 text-center md:grid-cols-4">
+              {[
+                ["Ribbon", s.stats.wins],
+                ["Badge", s.stats.matches],
+                ["Medal", s.stats.kills],
+                ["Master", Math.floor(s.stats.kills / 5)],
+              ].map(([name, n]) => (
+                <div key={String(name)} className="border border-[#24548f] px-1 py-2">
+                  <div className="mx-auto mb-1 h-6 w-6 rounded-full border border-[#e2b53a]" />
+                  <div className="font-display text-[9px] tracking-widest text-[#e2b53a]">{name}</div>
+                  <div className="font-mono text-[10px] text-[#3dff8a]">Owned {n}</div>
+                </div>
+              ))}
+            </div>
+            <button
+              type="button"
+              disabled={s.stats.kills < next.need || title === "ACE"}
+              onClick={acquire}
+              className="mt-4 h-9 bg-[#1d6fe0] px-4 font-display tracking-[0.2em] text-white disabled:opacity-40"
+            >
+              {idn ? "AMBIL" : "Acquire"} {title === "ACE" ? "" : next.name}
+            </button>
+          </div>
         </div>
-      </div>
+      ) : null}
+      {page === "item" ? (
+        <div className="flex-1 p-4">
+          <div className="max-w-sm border border-[#1d4e8f] bg-[#07182c] p-3">
+            <div className="font-display tracking-[0.18em]">KEVLAR</div>
+            <p className="mt-2 text-sm text-[#9eb4d4]">
+              {idn
+                ? "Beli di menu beku ronde. 650 GP, armor 100."
+                : "Bought in the freeze menu. 650 GP, armor 100."}
+            </p>
+          </div>
+        </div>
+      ) : null}
+      {page === "style" ? (
+        <div className="flex flex-1 gap-3 p-4">
+          {["#1d3d2a", "#3a2a14", "#1a2740"].map((c) => (
+            <div key={c} className="h-24 w-16 border border-[#1d4e8f]" style={{ background: c }} />
+          ))}
+        </div>
+      ) : null}
+      {page === "express" ? (
+        <ul className="flex-1 space-y-2 p-4 font-display text-sm tracking-widest text-[#d5e6ff]">
+          <li>ENEMY SPOTTED</li>
+          <li>NEED BACKUP</li>
+          <li>FOLLOW ME</li>
+          <li>HOLD POSITION</li>
+          <li>GO A</li>
+          <li>GO B</li>
+        </ul>
+      ) : null}
       <div
-        className="border-t border-border px-4 py-3 font-mono text-[11px] tracking-widest text-muted"
-        style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}
+        className="border-t border-[#16345c] px-4 py-2 font-mono text-[11px] tracking-widest text-[#8eb0d4]"
+        style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}
       >
-        {WEAPONS[s.loadout.primary].name} · {WEAPONS[s.loadout.pistol].name} · {WEAPONS[s.loadout.nade].name}
+        {title} · {WEAPONS[s.loadout.primary].name} · {WEAPONS[s.loadout.pistol].name} · {WEAPONS[s.loadout.nade].name}
       </div>
     </div>
   );
   if (typeof document === "undefined") return sheet;
   return createPortal(sheet, document.body);
-}
-
-function StatBar({ label, value }: { label: string; value: number }) {
-  return (
-    <div className="flex items-center gap-2">
-      <span className="w-8 font-display text-[9px] tracking-widest text-muted">{label}</span>
-      <div className="h-1.5 flex-1 overflow-hidden bg-surface">
-        <div className="h-full bg-accent" style={{ width: `${Math.max(6, value)}%` }} />
-      </div>
-    </div>
-  );
 }
 
 export function SettingsModal() {

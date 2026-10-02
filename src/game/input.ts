@@ -14,11 +14,13 @@ export type Actions = {
   slot: number;
   scoreboard: boolean;
   pause: boolean;
+  walk: boolean;
   justFire: boolean;
   justJump: boolean;
   justReload: boolean;
   justUse: boolean;
   justPause: boolean;
+  justDrop: boolean;
   justSlot: number;
   wheel: number;
 };
@@ -33,6 +35,8 @@ const GAME_CODES = new Set([
   "KeyQ",
   "KeyC",
   "KeyG",
+  "AltLeft",
+  "AltRight",
   "Space",
   "ShiftLeft",
   "ShiftRight",
@@ -53,7 +57,7 @@ const GAME_CODES = new Set([
   "KeyP",
 ]);
 
-export type TouchAction = "fire" | "ads" | "jump" | "reload" | "crouch" | "use" | "sprint" | "pause";
+export type TouchAction = "fire" | "ads" | "jump" | "reload" | "crouch" | "use" | "sprint" | "pause" | "walk";
 
 export type InputHandle = {
   actions: Actions;
@@ -61,6 +65,7 @@ export type InputHandle = {
   consumeLook: () => { x: number; y: number };
   setKeys: (codes: string[]) => void;
   setFire: (v: boolean) => void;
+  setDesktop: (on: boolean) => void;
   setLook: (dx: number, dy: number) => void;
   setMoveStick: (x: number, y: number) => void;
   setAction: (name: TouchAction, v: boolean) => void;
@@ -100,12 +105,16 @@ export function createInput(canvas: HTMLCanvasElement): InputHandle {
   let queuedSlot = 0;
   const touchBtn: Record<string, boolean> = {};
   let locked = false;
+  let desktopAim = false;
+  let lastCX = -1;
+  let lastCY = 0;
   const prev = {
     fire: false,
     jump: false,
     reload: false,
     use: false,
     pause: false,
+    drop: false,
     slot: 0,
   };
 
@@ -125,11 +134,13 @@ export function createInput(canvas: HTMLCanvasElement): InputHandle {
     slot: 0,
     scoreboard: false,
     pause: false,
+    walk: false,
     justFire: false,
     justJump: false,
     justReload: false,
     justUse: false,
     justPause: false,
+    justDrop: false,
     justSlot: 0,
     wheel: 0,
   };
@@ -152,11 +163,23 @@ export function createInput(canvas: HTMLCanvasElement): InputHandle {
     for (const k of Object.keys(touchBtn)) touchBtn[k] = false;
   }
   function mmove(e: MouseEvent) {
-    if (document.pointerLockElement !== canvas) return;
-    mx += e.movementX;
-    my += e.movementY;
+    if (document.pointerLockElement === canvas) {
+      mx += e.movementX;
+      my += e.movementY;
+      lastCX = -1;
+      return;
+    }
+    if (!desktopAim) return;
+    if (lastCX >= 0) {
+      mx += e.clientX - lastCX;
+      my += e.clientY - lastCY;
+    }
+    lastCX = e.clientX;
+    lastCY = e.clientY;
   }
   function md(e: MouseEvent) {
+    const t = e.target as HTMLElement | null;
+    if (t?.closest?.("button, a, input, textarea, select")) return;
     if (e.button === 0) fireHeld = true;
     if (e.button === 2) adsHeld = true;
   }
@@ -181,7 +204,7 @@ export function createInput(canvas: HTMLCanvasElement): InputHandle {
     if (document.hidden) blur();
   });
   canvas.addEventListener("mousemove", mmove);
-  canvas.addEventListener("mousedown", md);
+  window.addEventListener("mousedown", md);
   window.addEventListener("mouseup", mu);
   canvas.addEventListener("contextmenu", ctx);
   canvas.addEventListener("wheel", wh, { passive: true });
@@ -210,6 +233,8 @@ export function createInput(canvas: HTMLCanvasElement): InputHandle {
     const reload = k.has("KeyR") || !!touchBtn.reload;
     const use = k.has("KeyE") || !!touchBtn.use;
     const pause = k.has("Escape") || k.has("KeyP") || !!touchBtn.pause;
+    const drop = k.has("KeyG");
+    const walk = (k.has("AltLeft") || k.has("AltRight") || !!touchBtn.walk) && !k.has("ShiftLeft") && !k.has("ShiftRight") && !touchBtn.sprint;
     actions.moveX = mxv;
     actions.moveY = myv;
     actions.lookX = mx;
@@ -225,11 +250,13 @@ export function createInput(canvas: HTMLCanvasElement): InputHandle {
     actions.slot = slot;
     actions.scoreboard = k.has("Tab");
     actions.pause = pause;
+    actions.walk = walk;
     actions.justFire = fire && !prev.fire;
     actions.justJump = jump && !prev.jump;
     actions.justReload = reload && !prev.reload;
     actions.justUse = use && !prev.use;
     actions.justPause = pause && !prev.pause;
+    actions.justDrop = drop && !prev.drop;
     actions.justSlot = slot !== 0 && slot !== prev.slot ? slot : 0;
     actions.wheel = wheel;
     prev.fire = fire;
@@ -237,6 +264,7 @@ export function createInput(canvas: HTMLCanvasElement): InputHandle {
     prev.reload = reload;
     prev.use = use;
     prev.pause = pause;
+    prev.drop = drop;
     prev.slot = slot;
     mx = 0;
     my = 0;
@@ -254,11 +282,28 @@ export function createInput(canvas: HTMLCanvasElement): InputHandle {
   }
 
   function requestLock() {
-    const p = canvas.requestPointerLock({ unadjustedMovement: true } as PointerLockOptions);
-    if (p && typeof (p as Promise<void>).catch === "function") {
-      (p as Promise<void>).catch(() => {
-        canvas.requestPointerLock();
-      });
+    const quiet = (p: unknown) => {
+      if (p && typeof (p as Promise<void>).catch === "function") {
+        (p as Promise<void>).catch(() => {});
+      }
+    };
+    try {
+      const p = canvas.requestPointerLock({ unadjustedMovement: true } as PointerLockOptions);
+      if (p && typeof (p as Promise<void>).catch === "function") {
+        (p as Promise<void>).catch(() => {
+          try {
+            quiet(canvas.requestPointerLock());
+          } catch {
+            /* ignore */
+          }
+        });
+      }
+    } catch {
+      try {
+        quiet(canvas.requestPointerLock());
+      } catch {
+        /* ignore */
+      }
     }
   }
 
@@ -274,6 +319,10 @@ export function createInput(canvas: HTMLCanvasElement): InputHandle {
     },
     setFire: (v) => {
       fireHeld = v;
+    },
+    setDesktop: (on: boolean) => {
+      desktopAim = on;
+      if (!on) lastCX = -1;
     },
     setLook: (dx, dy) => {
       mx += dx;
@@ -298,7 +347,7 @@ export function createInput(canvas: HTMLCanvasElement): InputHandle {
       window.removeEventListener("keyup", up);
       window.removeEventListener("blur", blur);
       canvas.removeEventListener("mousemove", mmove);
-      canvas.removeEventListener("mousedown", md);
+      window.removeEventListener("mousedown", md);
       window.removeEventListener("mouseup", mu);
       canvas.removeEventListener("contextmenu", ctx);
       canvas.removeEventListener("wheel", wh);
